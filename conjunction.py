@@ -486,7 +486,7 @@ class Conjunctions:
                 spacecraft_names = spacecraft_names.split(',')
             
             allowed_names = {'so': ['so', 'solar orbiter', 'solo'], 
-                             'psp': ['psp', 'parker solar probe'], 
+                             'psp': ['psp', 'parker solar probe', 'parker'], 
                              'bepi': ['bepi', 'bepicolombo', 'bepi colombo'], 
                              'sta': ['sa', 'sta', 'stereo-a', 'stereo a', 'stereoa'], 
                              'earth': ['earth', 'erde', 'aarde', 'terre', 'terra', 
@@ -521,7 +521,7 @@ class Conjunctions:
                 category = category.split(',')
                 category = [cat.strip() for cat in category]
             # if category is non_conj, change set of conjunctions to be searched
-            if any(category = [['non_conj'], ['non_conjs'], ['non conj'], ['non conjs'], ['None']]):
+            if any(category) in [['non_conj'], ['non_conjs'], ['non conj'], ['non conjs'], ['None']]:
                 conjunctions = self.non_conjs
                 category = [None]
             for conj in conjunctions:

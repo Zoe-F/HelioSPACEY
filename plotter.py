@@ -14,6 +14,7 @@ from sunpy.coordinates import frames
 from sunpy.sun import constants as const
 import astrospice
 import cdflib as cdf
+from scipy.interpolate import CubicSpline
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
@@ -426,7 +427,7 @@ def plot_conjunction2D(coords, conj, idx=0, ENLIL=False, sim=None, variable=None
                     label=labels[body_index.get(conj.bodies[i])])
     
     if ENLIL:
-        ax.legend(loc='lower left', bbox_to_anchor=(-0.25,-0.08), markerscale=2, 
+        ax.legend(loc='lower left', bbox_to_anchor=(-0.25,-0.08), markerscale=1, 
                   labelspacing=0.8, frameon=False, fontsize='medium')
         ax.text(5.23, 1.4, 'Date: {}'.format(str(conj.times[idx].iso)[0:10]), fontsize='medium')
     else: # bbox_to_anchor changed from (-0.08,-0.15)

@@ -5,15 +5,6 @@ Created on Mon Feb 13 15:19:36 2023
 @author: Zoe.Faes
 """
 
-# Approx. 30% of conjunctions in each category have a length <= 1 day (4 data points)
-# number of conjunctions in each category per sim: 128 217 97 116
-# number of conjunctions <= 1 day in each category: 36 75 27 39 ~30%
-# number of conjunctions < 3 days in each category: 48 87 40 50 ~40%
-# number of conjunctions < 5 days in each category: 52 141 53 73 ~(40%, 65%, 55%, 63%)
-# number of conjunctions < 8 days in each category: 64 171 67 91 ~(50%, 80%, 70%, 80%)
-# number of conjunctions < 10 days in each category: 74 178 70 95 ~(58%, 82%, 72%, 82%)
-
-
 # imports
 import os
 import torch
@@ -70,11 +61,13 @@ start = datetime.now()
     
 ###################################  DATA  ####################################
 
+# FOR CONJ VS NON-CONJ: set binary=True
+# TO CLASSIFY DIFFERENT CATEGORIES OF CONJUNCTIONS: set binary=False
+
 label_labelling = {'non_conj': 0, 'cone': 1, 'quadrature': 2, 'opposition': 3, 'parker spiral': 4}
-conjunctions = []
 
 def get_data(conjunctions, split, binary=True, var='V1', 
-                      truncate_after=5*u.day, test_method='train/test'):
+             truncate_after=5*u.day, test_method='train/test'):
     
     non_conjs = [c.timeseries[var] for conjs in conjunctions for c in conjs.non_conjs]
     cones = [c.timeseries[var] for conjs in conjunctions for c in conjs.cones]
@@ -129,7 +122,7 @@ def get_data(conjunctions, split, binary=True, var='V1',
     training_labels = torch.flatten(labs, 0, -1)
     training_labels = training_labels.type(torch.LongTensor)
     training_labels = training_labels.to(device)
-    print(training_tensors.shape, training_labels.shape)
+    
     weights = weights/sum(weights)
     
     tensors = []
@@ -160,7 +153,9 @@ def get_data(conjunctions, split, binary=True, var='V1',
     testing_labels = torch.flatten(labs, 0, -1)
     testing_labels = testing_labels.type(torch.LongTensor)
     testing_labels = testing_labels.to(device)
-    print(testing_tensors.shape, testing_labels.shape)
+    
+    print('Training dataset size: ', training_tensors.size())
+    print('Test dataset size: ', testing_tensors.size())
     
     return training_tensors, training_labels, testing_tensors, testing_labels, weights
     
@@ -281,3 +276,12 @@ print("Done!")
 end = datetime.now()
 
 print(start, end)
+
+
+# Approx. 30% of conjunctions in each category have a length <= 1 day (4 data points)
+# number of conjunctions in each category per sim: 128 217 97 116
+# number of conjunctions <= 1 day in each category: 36 75 27 39 ~30%
+# number of conjunctions < 3 days in each category: 48 87 40 50 ~40%
+# number of conjunctions < 5 days in each category: 52 141 53 73 ~(40%, 65%, 55%, 63%)
+# number of conjunctions < 8 days in each category: 64 171 67 91 ~(50%, 80%, 70%, 80%)
+# number of conjunctions < 10 days in each category: 74 178 70 95 ~(58%, 82%, 72%, 82%)
