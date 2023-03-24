@@ -35,17 +35,17 @@ file_names = ['Carolina_Almeida_011523_SH_1_20200701_20250701_6h',
               'limei_yan_032522_SH_2_20200701_20250701_6h',
               'limei_yan_032522_SH_3_20200701_20250701_6h',
               'Manuel_Grande_062021_SH_1_20200701_20250701_6h',
-              'MariaElena_Innocenti_111020_SH_1_20200701_20250701_6h',
-              'Michael_Terres_110920_SH_1_20200701_20250701_6h',
-              'Michael_Terres_111020_SH_1_20200701_20250701_6h',
-              'Ou_Chen_081721_SH_2_20200701_20250701_6h',
-              'Peng_Shaoy_052822_SH_1_20200701_20250701_6h',
-              'Peng_Shaoy_052822_SH_2_20200701_20250701_6h',
-              'Peng_Shaoy_052822_SH_3_20200701_20250701_6h',
-              'Qingbao_He_112022_SH_1_20200701_20250701_6h',
-              'Qingbao_He_112022_SH_2_20200701_20250701_6h',
-              'Sanchita_Pal_041621_SH_1_20200701_20250701_6h',
-              'Zoe_Faes_101922_SH_1_20200701_20250701_6h']
+               'MariaElena_Innocenti_111020_SH_1_20200701_20250701_6h',
+               'Michael_Terres_110920_SH_1_20200701_20250701_6h',
+               'Michael_Terres_111020_SH_1_20200701_20250701_6h',
+               'Ou_Chen_081721_SH_2_20200701_20250701_6h',
+               'Peng_Shaoy_052822_SH_1_20200701_20250701_6h',
+               'Peng_Shaoy_052822_SH_2_20200701_20250701_6h',
+               'Peng_Shaoy_052822_SH_3_20200701_20250701_6h',
+               'Qingbao_He_112022_SH_1_20200701_20250701_6h',
+               'Qingbao_He_112022_SH_2_20200701_20250701_6h',
+               'Sanchita_Pal_041621_SH_1_20200701_20250701_6h',
+               'Zoe_Faes_101922_SH_1_20200701_20250701_6h']
 
 file_paths = ['./Timeseries/{}.pickle'.format(name) for name in file_names]
 
@@ -123,7 +123,8 @@ def get_data(conjunctions, split, binary=True, var='V1',
     training_labels = training_labels.type(torch.LongTensor)
     training_labels = training_labels.to(device)
     
-    weights = weights/sum(weights)
+    for w in weights:
+        w = w/sum(weights)
     
     tensors = []
     labels = []
@@ -160,7 +161,7 @@ def get_data(conjunctions, split, binary=True, var='V1',
     return training_tensors, training_labels, testing_tensors, testing_labels, weights
     
     
-train_tensors, train_labels, test_tensors, test_labels, weights = get_data(conjs, 0.8, binary=False)
+train_tensors, train_labels, test_tensors, test_labels, weights = get_data(conjs, 0.8, binary=True)
 
 class TimeseriesDataset(Dataset):
     def __init__(self, ts_labels, ts_tensor, transform=None, target_transform=None):
@@ -187,9 +188,9 @@ test_data = TimeseriesDataset(test_labels, test_tensors)
 
 #################################  START NN  ##################################
 
-learning_rate = 10**(-3)
+learning_rate = 10**(-4)
 batch_size = 64
-epochs = 100
+epochs = 50
 
 train_dataloader = DataLoader(training_data, batch_size=batch_size, shuffle=True)
 test_dataloader = DataLoader(test_data, batch_size=batch_size, shuffle=True)
@@ -218,7 +219,7 @@ class NeuralNetwork(nn.Module):
 
 model = NeuralNetwork().to(device)
 
-loss_fn = nn.CrossEntropyLoss(weight=torch.tensor(weights, device=device))
+loss_fn = nn.CrossEntropyLoss(weight=torch.tensor(weights, dtype=torch.float32, device=device))
 #loss_fn = nn.NLLLoss(weight=torch.tensor([1., 0.5], device=device))
 
 optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -264,13 +265,23 @@ def test_loop(dataloader, model, loss_fn):
             
     test_loss /= num_batches
     correct /= size
+    
     print(f"Test Error: \n Accuracy: {(100*correct):>0.1f}%, Avg loss: {test_loss:>8f}")
     print('TP: {}, FP: {}, FN: {}, TN: {}.'.format(TP, FP, FN, TN))
+    
+    return 100*correct, test_loss, [TP, FP, FN, TN]
 
+
+accuracy = []
+test_loss = []
+confusion = []
 for t in range(epochs):
     print(f"Epoch {t+1}\n-------------------------------")
     train_loop(train_dataloader, model, loss_fn, optimizer)
-    test_loop(test_dataloader, model, loss_fn)
+    acc, loss, conf_matrix = test_loop(test_dataloader, model, loss_fn)
+    accuracy.append(acc)
+    test_loss.append(loss)
+    confusion.append(conf_matrix)
 print("Done!")
 
 end = datetime.now()
