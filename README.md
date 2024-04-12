@@ -8,11 +8,11 @@ HelioSPACEY enables:
 - extraction of synthetic data from simulations* by flying 'virtual spacecraft' through the simulation space,
 - querying of timeseries data obtained from curated data products** from heliophysics missions,
 - processing and visualisation of these timeseries,
-- feature engineering from these timeseries for the purpose of training machine learning models
-- integration with popular Python machine learning libraries
-- identification of conjunctions between spacecraft resulting in linked in-situ observations relevant to the characterisation of solar wind expansion
+- feature engineering from these timeseries for the purpose of training machine learning models,
+- integration with popular Python machine learning libraries,
+- identification of conjunctions between spacecraft resulting in linked in-situ observations relevant to the characterisation of solar wind expansion.
 
-Contributors to this project include: Zoe Faes, Laura Hayes, Andrew Walsh and Daniel Müller.
+Main contributors to this project include: Zoe Faes, Laura Hayes, Andrew Walsh and Daniel Müller.
 
 This project relies heavily on Sunpy, Astropy, astrospice, Numpy, Pandas, Matplotlib, scikit-learn and PyTorch.
 
