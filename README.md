@@ -1,10 +1,20 @@
-# Virtual Spacecraft Timeseries Analysis (VISTA)
 
-This project will consist of the work undertaken during the course of a young graduate trainee (YGT) programme for
-heliophysics research using machine learning (ML) methods at the European Space Agency (ESA). The objective of this
-project is to define a set of criteria for the identification of conjunctions in data from the Solar Orbiter (SO) mission,
-the Parker Solar Probe (PSP) and the BepiColombo mission using a set of virtual spacecrafts (observation points) in a
-whole-heliosphere 3D magneto-hydrodynamic (MHD) simulation and a "physics-informed" neural network to identify events
-which may have been omitted by classical methods. 
+# Heliophysics SPAcecraft Conjunction timEseries analYsis (HelioSPACEY)
 
-The current contributors to this project are: Zoe Faes, Laura Hayes, Daniel Müller and Andrew Walsh.
+This project aims to facilitate the analysis of timeseries data obtained by space-based instruments from heliophysics missions. 
+It was developed for the purpose of finding conjunctions between spacecraft from in-situ data (see https://meetingorganizer.copernicus.org/EGU24/EGU24-12885.html) The missions currently supported by this project are Solar Orbiter, Parker Solar Probe, BepiColombo and STEREO-A. The project enables the use of magnetohydrodynamic (MHD) ENLIL simulations* as input to generate synthetic data for the training of machine learning (ML) models.
+
+HelioSPACEY enables:
+- extraction of synthetic data from simulations* by flying 'virtual spacecraft' through the simulation space,
+- querying of timeseries data obtained from curated data products** from heliophysics missions,
+- processing and visualisation of these timeseries,
+- feature engineering from these timeseries for the purpose of training machine learning models
+- integration with popular Python machine learning libraries
+- identification of conjunctions between spacecraft resulting in linked in-situ observations relevant to the characterisation of solar wind expansion
+
+Contributors to this project include: Zoe Faes, Laura Hayes, Andrew Walsh and Daniel Müller.
+
+This project relies heavily on Sunpy, Astropy, astrospice, Numpy, Pandas, Matplotlib, scikit-learn and PyTorch.
+
+*https://ccmc.gsfc.nasa.gov/models/CORHEL-MAS_WSA_ENLIL~5.0/
+**https://omniweb.gsfc.nasa.gov/coho/html/cw_data.html
