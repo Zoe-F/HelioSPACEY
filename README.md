@@ -2,7 +2,7 @@
 # Heliophysics SPAcecraft Conjunction timEseries analYsis (HelioSPACEY)
 
 This project aims to facilitate the analysis of timeseries data obtained by space-based instruments from heliophysics missions. 
-It was developed for the purpose of finding conjunctions between spacecraft from in-situ data (see https://meetingorganizer.copernicus.org/EGU24/EGU24-12885.html) The missions currently supported by this project are Solar Orbiter, Parker Solar Probe, BepiColombo and STEREO-A. The project enables the use of magnetohydrodynamic (MHD) ENLIL simulations* as input to generate synthetic data for the training of machine learning (ML) models.
+It was developed for the purpose of finding conjunctions between spacecraft from in-situ data (see https://meetingorganizer.copernicus.org/EGU24/EGU24-12885.html). The missions currently supported by this project are Solar Orbiter, Parker Solar Probe, BepiColombo and STEREO-A. The project enables the use of magnetohydrodynamic (MHD) ENLIL simulations* as input to generate synthetic data for the training of machine learning (ML) models.
 
 HelioSPACEY enables:
 - extraction of synthetic data from simulations* by flying 'virtual spacecraft' through the simulation space,
