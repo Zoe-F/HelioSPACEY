@@ -7,16 +7,20 @@ Created on Mon Jan 23 15:43:01 2023
 
 # imports
 import numpy as np
+from pandas import Series, DataFrame
 import astropy.units as u
 import astropy.time as t
 from astropy.coordinates import SkyCoord
 from sunpy.coordinates import frames
+from sunpy.time import TimeRange
 from sunpy.sun.constants import equatorial_radius
+import matplotlib.pyplot as plt
 import warnings
+from bisect import bisect_left, bisect_right
 
-def custom_formatwarning(msg, category, *args, **kwargs):
+def custom_formatwarning(msg, label, *args, **kwargs):
     # ignore everything except the message
-    return '\n' + str(category.__name__) + ': ' + str(msg) + '\n'
+    return '\n' + str(label.__name__) + ': ' + str(msg) + '\n'
 
 warnings.formatwarning = custom_formatwarning
 
@@ -25,33 +29,36 @@ warnings.formatwarning = custom_formatwarning
 class Conjunction:
     """
     This class stores conjunction parameters for each individual conjunction,
-    including category of the conjunction, times, length, bodies involved, 
-    coordinates of those bodies, and the timeseries class corresponding to 
+    including label of the conjunction, times, length, spacecraft involved, 
+    coordinates of those spacecraft, and the timeseries class corresponding to 
     the conjunction.
     """
-    def __init__(self, idnum, category, times, dt, bodies, coords):
+    def __init__(self, idnum, label, times, dt, spacecraft, coords):
         self.id = idnum
-        self.category = category
+        self.label = label
         self.times = times
         self.dt = dt
         self.length = t.TimeDelta(times[-1]-times[0])
-        self.bodies = bodies
-        self.coords = [coords]
+        self.spacecraft = spacecraft
+        self.sc_coords = coords
+        self.sc_cell_idxs = {}
+        self.sc_cell_times = {}
         self.isparker = [False]
         self.parkerpairs = []
         self.swspeed = []
-        self.timeseries = {}
+        self.timeseries = {spacecraft[0]: {}, spacecraft[1]: {}}
+        self.ts_units = {}
         
     def __repr__(self):
         return ('Conjunction of the type {} with start time {} and end time {} between {}'
-                .format(self.category, self.times[0].iso[0:19], 
-                        self.times[-1].iso[0:19], ', '.join(self.bodies)))
+                .format(*self.label, self.times[0].iso[0:19], 
+                        self.times[-1].iso[0:19], ' and '.join(self.spacecraft)))
     
     def __str__(self):
         return ('Conjunction of the type {} with start time {} and end time {} between {}'
-                .format(self.category, self.times[0].iso[0:19],
-                        self.times[-1].iso[0:19], ', '.join(self.bodies)))
-
+                .format(*self.label, self.times[0].iso[0:19],
+                        self.times[-1].iso[0:19], ' and '.join(self.spacecraft)))
+    
 
 ############################  CONJUNCTIONS CLASS  ############################
 
@@ -62,7 +69,7 @@ class Conjunctions:
     the Coordinates class.
     """    
     #############################  CONSTRUCTORS  #############################
-    def __init__(self, times, bodies, coords):
+    def __init__(self, times, spacecraft, sc_coords, sc_cell_idxs = None, sc_cell_times = None):
         
         print('Initialising Conjunctions...')
         
@@ -79,28 +86,36 @@ class Conjunctions:
         
         self.times = times
         self.dt = t.TimeDelta(times[1]-times[0])
-        self.bodies = bodies
-        self.coords = coords
+        self.spacecraft = spacecraft
+        self.sc_coords = sc_coords
+        self.sc_cell_idxs = sc_cell_idxs
+        self.sc_cell_times = sc_cell_times
         
         print('Initialisation complete.')
         
     def __repr__(self):
         return ('There are {} conjunctions between {} from {} to {}'
-                .format(self.nallconjs, ', '.join(self.bodies),
+                .format(self.nallconjs, ', '.join(self.spacecraft),
                         self.times[0], self.times[-1]))
     
     def __str__(self):
         return ('There are {} conjunctions between {} from {} to {}'
-                .format(self.nallconjs, ', '.join(self.bodies),
+                .format(self.nallconjs, ', '.join(self.spacecraft),
                         self.times[0], self.times[-1]))
         
     ##########################  PRIVATE FUNCTIONS  ###########################
 
-    # finds the index of the closest element in a list to a given value
-    def _closest(self, lst, value):
-        lst = np.asarray(lst)
-        idx = (np.abs(lst - value)).argmin()
-        return idx
+    # Function to find the index of the closest element in a list to a given value
+    def _nearest(self, lst, value):
+        idx = bisect_left(lst, value)
+        if idx == len(lst):
+            return idx - 1
+        if idx == 0:
+            return 0
+        if lst[idx] - value < value - lst[idx-1]:
+            return idx
+        else:
+            return idx - 1
     
     # finds angular separation in radians between two points (SkyCoord objects) 
     # using the haversine formula
@@ -134,15 +149,15 @@ class Conjunctions:
         ignore_duplicates = []
         
         # Get angular separation
-        for i in range(len(self.bodies)):
-            for j in range(len(self.bodies)):
+        for i, sc1 in enumerate(self.spacecraft):
+            for j, sc2 in enumerate(self.spacecraft):
                 if (i != j) and (j not in ignore_duplicates):
                     sep = []
-                    for k in range(len(coords[i])):
+                    for k in range(len(coords[sc1])):
                         if sep_formula == 'haversine':
-                            sep.append(self._haversine(coords[i][k], coords[j][k]))
+                            sep.append(self._haversine(coords[sc1][k], coords[sc2][k]))
                         else:
-                            sep.append(self._vincenty(coords[i][k], coords[j][k]))
+                            sep.append(self._vincenty(coords[sc1][k], coords[sc2][k]))
                     seps.append(sep)
             ignore_duplicates.append(i)
         
@@ -171,13 +186,37 @@ class Conjunctions:
 
     # queries the Simulation class for the array of radial solar wind speeds
     # at the coordinates of each spacecraft for all coordinate times
+    def _get_swspeed_sim(self, sim):
+        # TODO: only keep swspeeds corresponding to self.times, not self.sc_cell_times
+        
+        swspeeds = []
+        # need mjd times for easy comparison with coordinate times
+        sim._get_times(mjd=True)
+        for i, coord in enumerate(zip(*self.sc_cell_idxs.values())): # get coords of all S/Cs at each time
+            # get data for closest simulation time
+            swspeed = []
+            for j, c in enumerate(coord):
+                time = zip(*self.sc_cell_times.values())[i][j]
+                value, units = sim.get_value('V1', time, c)
+                # find and store speed for closest simulation coordinates to S/C location
+                swspeed.append(value << units)
+            swspeeds.append(swspeed)
+            
+        swspeeds = list(map(list, zip(*swspeeds))) # transpose without converting to np.array
+        
+        return swspeeds
+    
+    # queries the Simulation class for the array of radial solar wind speeds
+    # at the coordinates of each spacecraft for all coordinate times
     def _get_swspeed(self, sim):
+        
+        # TODO: check which function is used and check rotation of sim space (phi0)
         
         swspeeds = []
         if sim:
             # need mjd times for easy comparison with coordinate times
             sim._get_times(mjd=True)
-        for coord in np.asarray(self.coords).transpose(): 
+        for coord in zip(*self.sc_coords.values()): 
             if sim:
                 # get speeds for closest simulation time
                 data, units = sim.get_data('V1', coord[0].obstime)
@@ -188,11 +227,11 @@ class Conjunctions:
                         dt = t.TimeDelta(coord[0].obstime - sim.times[0]).to_value('hr')
                         omega = (2*np.pi/25.38*u.rad/u.day).to(u.rad/u.hour)
                         dlon = dt*omega.value
-                        phi_idx = self._closest(sim.phi.value + dlon, c.lon.rad)
+                        phi_idx = self._nearest(sim.phi.value + dlon, c.lon.rad)
                     else:
-                        phi_idx = self._closest(sim.phi.value, c.lon.rad)
-                    theta_idx = self._closest(sim.theta.value, c.lat.rad)
-                    r_idx = self._closest(sim.r.value, c.distance.au)
+                        phi_idx = self._nearest(sim.phi.value, c.lon.rad)
+                    theta_idx = self._nearest(sim.theta.value, c.lat.rad)
+                    r_idx = self._nearest(sim.r.value, c.distance.au)
                     # find and store speed for closest simulation coordinates to S/C location
                     swspeed.append(data[phi_idx, theta_idx, r_idx]*units)
                 else:
@@ -216,7 +255,7 @@ class Conjunctions:
         ignore_duplicates = []
 
         # Find corresponding coordinates at 2.5 Rsun
-        for coord, swspeed in zip(self.coords, swspeeds):
+        for coord, swspeed in zip(self.sc_coords.values(), swspeeds):
             parker_coords = []
             for c, speed in zip(coord, swspeed):
                 parker_coord = self._parker_spiral(speed, c, radius=2.5*equatorial_radius)
@@ -224,8 +263,8 @@ class Conjunctions:
             coords_at_surface.append(parker_coords)
             
         # Get angular separation of Parker spiral lines
-        for i in range(len(self.bodies)):
-            for j in range(len(self.bodies)):
+        for i in range(len(self.spacecraft)):
+            for j in range(len(self.spacecraft)):
                 if (i != j) and (j not in ignore_duplicates):
                     seps = []
                     for k in range(len(coords_at_surface[i])):
@@ -249,74 +288,74 @@ class Conjunctions:
         parkers = []
         non_conjs = []
         
-        # access the correct index for each pair of bodies corresponding to 
-        # the separation angle, depending on the number of bodies
-        two_body = {'0': [0,1]}
-        three_body = {'0': [0,1], '1': [0,2], '2': [1,2]}
-        four_body = {'0': [0,1], '1': [0,2], '2': [0,3], 
+        # access the correct index for each pair of spacecraft corresponding to 
+        # the separation angle, depending on the number of spacecraft
+        two_sc = {'0': [0,1]}
+        three_sc = {'0': [0,1], '1': [0,2], '2': [1,2]}
+        four_sc = {'0': [0,1], '1': [0,2], '2': [0,3], 
                      '3': [1,2], '4': [1,3], '5': [2,3]}
-        five_body = {'0': [0,1], '1': [0,2], '2': [0,3], '3': [0,4], '4': [1,2], 
+        five_sc = {'0': [0,1], '1': [0,2], '2': [0,3], '3': [0,4], '4': [1,2], 
                      '5': [1,3], '6': [1,4], '7': [2,3], '8': [2,4], '9': [3,4]}
-        number_of_bodies = [two_body, three_body, four_body, five_body]
+        number_of_spacecraft = [two_sc, three_sc, four_sc, five_sc]
         
-        # get coordinates and separation angles for chosen bodies
+        # get coordinates and separation angles for chosen spacecraft
         print('Calculating angular separation...')
-        seps = self._get_sep(self.coords)
+        seps = self._get_sep(self.sc_coords)
         print('Getting solar wind speed...')
         swspeeds = self._get_swspeed(sim)
         print('Calculating Parker spiral separation...')
         parker_seps = self._get_parker_sep(swspeeds)
         
-        # initialise unique id number for each two-body conjunction
+        # initialise unique id number for each two-sc conjunction
         idnum = 0
         
         for s in range(len(seps)):
             print('{}%'.format(s*10)) # progress indicator
             
-            # get indices for bodies corresponding to separation angle s
-            idx = number_of_bodies[len(self.bodies)-2].get(str(s))
+            # get indices for spacecraft corresponding to separation angle s
+            idx = number_of_spacecraft[len(self.spacecraft)-2].get(str(s))
             
             # identify and categorize conjunctions of type cone, quad or opp
             # and store relevant information in Conjunction instance
             for time, sep, parker_sep, coord, speed in zip(
-                    self.times, seps[s], parker_seps[s], 
-                    np.array(self.coords).transpose(), list(map(list, zip(*swspeeds)))):
+                    self.times, seps[s], parker_seps[s], zip(*self.sc_coords.values()),
+                    list(map(list, zip(*swspeeds)))):
                 
                 non_conj = False
                 
                 if sep <= 20*u.deg: # cone conjunction
                     conj = Conjunction(
                         idnum=[idnum], 
-                        category=['cone'], 
+                        label=['cone'], 
                         times=[time], dt=self.dt, 
-                        bodies=np.asarray([self.bodies[idx[0]], self.bodies[idx[1]]]),
-                        coords=[coord[idx[0]], coord[idx[1]]]
+                        spacecraft=np.asarray([self.spacecraft[idx[0]], self.spacecraft[idx[1]]]),
+                        coords={self.spacecraft[idx[0]]: [coord[idx[0]]], self.spacecraft[idx[1]]: [coord[idx[1]]]}
                         )
-                    conj.bodypairs = conj.bodies
+                    conj.scpairs = conj.spacecraft
                     cones.append(conj)
                     idnum += 1
                     
                 elif (sep >= 80*u.deg) and (sep <= 100*u.deg): # quadrature conjunction
                     conj = Conjunction(
                         idnum=[idnum], 
-                        category=['quadrature'], 
+                        label=['quadrature'], 
                         times=[time], dt=self.dt,
-                        bodies=np.asarray([self.bodies[idx[0]], self.bodies[idx[1]]]),
-                        coords=[coord[idx[0]], coord[idx[1]]]
+                        spacecraft=np.asarray([self.spacecraft[idx[0]], self.spacecraft[idx[1]]]),
+                        coords={self.spacecraft[idx[0]]: [coord[idx[0]]], self.spacecraft[idx[1]]: [coord[idx[1]]]}
                         )
-                    conj.bodypairs = conj.bodies
+                    conj.scpairs = conj.spacecraft
                     quads.append(conj)
                     idnum += 1
                     
                 elif (sep >= 170*u.deg) and (sep <= 190*u.deg): # opposition conjunction
                     conj = Conjunction(
                         idnum=[idnum], 
-                        category=['opposition'], 
+                        label=['opposition'], 
                         times=[time], dt=self.dt, 
-                        bodies=np.asarray([self.bodies[idx[0]], self.bodies[idx[1]]]),
-                        coords=[coord[idx[0]], coord[idx[1]]]
+                        spacecraft=np.asarray([self.spacecraft[idx[0]], self.spacecraft[idx[1]]]),
+                        coords={self.spacecraft[idx[0]]: [coord[idx[0]]], self.spacecraft[idx[1]]: [coord[idx[1]]]}
                         )
-                    conj.bodypairs = conj.bodies
+                    conj.scpairs = conj.spacecraft
                     opps.append(conj)
                     idnum += 1
                 else:
@@ -325,13 +364,13 @@ class Conjunctions:
                 if parker_sep < 10*u.deg: # Parker conjunction
                     conj = Conjunction(
                         idnum=[idnum], 
-                        category=['parker spiral'], 
+                        label=['parker spiral'], 
                         times = [time], dt=self.dt,
-                        bodies=np.asarray([self.bodies[idx[0]], self.bodies[idx[1]]]),
-                        coords=[coord[idx[0]], coord[idx[1]]])
+                        spacecraft=np.asarray([self.spacecraft[idx[0]], self.spacecraft[idx[1]]]),
+                        coords={self.spacecraft[idx[0]]: [coord[idx[0]]], self.spacecraft[idx[1]]: [coord[idx[1]]]})
                     conj.isparker = [True]
-                    conj.bodypairs = conj.bodies
-                    conj.parkerpairs = conj.bodies
+                    conj.scpairs = conj.spacecraft
+                    conj.parkerpairs = conj.spacecraft
                     conj.swspeed.append([speed[idx[0]], speed[idx[1]]])
                     parkers.append(conj)
                     idnum += 1
@@ -340,10 +379,10 @@ class Conjunctions:
                     if find_non_conjs and non_conj: # store remaining intervals as non-conjs
                         conj = Conjunction(
                             idnum=None, 
-                            category=[None], 
+                            label=[None], 
                             times = [time], dt=self.dt,
-                            bodies=np.asarray([self.bodies[idx[0]], self.bodies[idx[1]]]),
-                            coords=[coord[idx[0]], coord[idx[1]]]
+                            spacecraft=np.asarray([self.spacecraft[idx[0]], self.spacecraft[idx[1]]]),
+                            coords={self.spacecraft[idx[0]]: [coord[idx[0]]], self.spacecraft[idx[1]]: [coord[idx[1]]]}
                             )
                         non_conjs.append(conj)
                         
@@ -362,9 +401,10 @@ class Conjunctions:
         if conj1.id: # check if conj has id (non_conjs do not have ids)
             conj1.id.append(conj2.id[0])
         conj1.times.append(conj2.times[0])
-        conj1.coords.append(conj2.coords[0])
-        if conj1.category != conj2.category:
-            conj1.category.append(conj2.category)
+        conj1.sc_coords[conj1.spacecraft[0]].append(conj2.sc_coords[conj2.spacecraft[0]][0])
+        conj1.sc_coords[conj1.spacecraft[1]].append(conj2.sc_coords[conj2.spacecraft[1]][0])
+        if conj1.label != conj2.label:
+            conj1.label.append(conj2.label)
         if any(conj1.isparker) and any(conj2.isparker):
             # verify that Parker conjunctions are occuring between the same spacecraft
             if all(conj1.parkerpairs) != all(conj2.parkerpairs):
@@ -377,7 +417,7 @@ class Conjunctions:
 
     # merging conjunctions ensures that conjunctions lasting longer than one
     # time increment are treated as single conjunctions of the correct length
-    # input: conjunctions of a single category if separation of cones and Parker 
+    # input: conjunctions of a single label if separation of cones and Parker 
     # conjunctions is required
     def _merge_consecutive_conjunctions(self, conjunctions):
         
@@ -385,14 +425,14 @@ class Conjunctions:
         
         conj = conjunctions[0]
         for j in range(len(conjunctions)-1):
-            # merge conjunctions with consecutive times and matching bodies
+            # merge conjunctions with consecutive times and matching spacecraft
             if (conjunctions[j].times[-1].isclose(conjunctions[j+1].times[0], self.dt*1.5) 
-                and all(conjunctions[j].bodies) == all(conjunctions[j+1].bodies)):
+                and np.array_equal(conjunctions[j].spacecraft, conjunctions[j+1].spacecraft)):
                 conj = self._append_conj_properties(conj, conjunctions[j+1])
             
-            # separate conjunctions when times are not consecutive or bodies don't match
+            # separate conjunctions when times are not consecutive or spacecraft don't match
             elif (not(conjunctions[j].times[-1].isclose(conjunctions[j+1].times[0], self.dt*1.5)) 
-                  or conjunctions[j].bodies != conjunctions[j+1].bodies):
+                  or any(conjunctions[j].spacecraft != conjunctions[j+1].spacecraft)):
                 conj.length = t.TimeDelta(conj.times[-1] - conj.times[0])
                 merged_conjunctions.append(conj)
                 conj = conjunctions[j+1]
@@ -407,7 +447,7 @@ class Conjunctions:
                
         return merged_conjunctions
     
-    # finds conjunctions with at least one body in common occuring at the same 
+    # finds conjunctions with at least one spacecraft in common occuring at the same 
     # times and stores them as lists of conjunctions
     def _find_simultaneous_conjunctions(self):
         
@@ -428,11 +468,11 @@ class Conjunctions:
             ignore_duplicates.append(i)
             
         return simultaneous
-        
+    
 
     ###########################  PUBLIC FUNCTIONS  ###########################
         
-    # finds all conjunctions for bodies and time range specified at class instantiation
+    # finds all conjunctions for spacecraft and time range specified at class instantiation
     def get_all_conjunctions(self, sim=None, dt=None):
         
         if dt:
@@ -455,10 +495,22 @@ class Conjunctions:
         self.parkers = self._merge_consecutive_conjunctions(self.parkers) if self.parkers else []
         self.non_conjs = self._merge_consecutive_conjunctions(self.non_conjs) if self.non_conjs else []
         
-        self.allconjs = [self.cones, self.quads, self.opps, self.parkers]
-        self.nallconjs = sum([len(conjs) for cat in self.allconjs for conjs in cat])
-        
         print('Consecutive conjunctions merged.')
+        
+        print('Translating to sim coordinates...')
+        
+        if sim:
+            for conjs in [self.cones, self.quads, self.opps, self.parkers, self.non_conjs]:
+                for conj in conjs:
+                    for sc in conj.spacecraft:
+                        start_idx = self._nearest(self.sc_cell_times[sc], conj.times[0].mjd) - 1
+                        end_idx = self._nearest(self.sc_cell_times[sc], conj.times[-1].mjd) + 2
+                        start_idx = 0 if start_idx < 0 else start_idx
+                        conj.sc_cell_times[sc] = self.sc_cell_times[sc][start_idx:end_idx]
+                        conj.sc_cell_idxs[sc] = self.sc_cell_idxs[sc][start_idx:end_idx]
+        
+        self.allconjs = [c for conj in [self.cones, self.quads, self.opps, self.parkers, self.non_conjs] for c in conj]
+        #self.nallconjs = sum([len(conjs) for cat in self.allconjs for conjs in cat])
         
         #print('Identifying multiple spacecraft conjunctions...')
         
@@ -470,20 +522,26 @@ class Conjunctions:
 
 
     # finds conjunctions according to specified parameters
-    def find_conjunctions(self, category=None, spacecraft_names=None,
-                          start_time=None, end_time=None, length=None):
+    def find_conjunctions(self, label=None, spacecraft_names=None, time=None,
+                          start_time=None, end_time=None, length=None, verbose=True):
         
         out = []
-        category_out = []
+        label_out = []
+        time_out = []
         start_out = []
         end_out = []
         length_out = []
-        bodies_out = []
+        spacecraft_out = []
+        
+        # flatten conjunctions
+        conjunctions = [c for conj in [self.cones, self.quads, self.opps, self.parkers] for c in conj]
         
         # parse spacecraft_names
         if spacecraft_names:
             if type(spacecraft_names) == str:
                 spacecraft_names = spacecraft_names.split(',')
+                for sc in spacecraft_names:
+                    sc = sc.strip()
             
             allowed_names = {'so': ['so', 'solar orbiter', 'solo'], 
                              'psp': ['psp', 'parker solar probe', 'parker'], 
@@ -492,13 +550,13 @@ class Conjunctions:
                              'earth': ['earth', 'erde', 'aarde', 'terre', 'terra', 
                                        'tierra', 'blue dot', 'home', 'sol d']}
             
-            bodies = []
+            spacecraft = []
             for name in spacecraft_names:
                 name = name.strip()
                 no_match = True
                 for key, names in allowed_names.items():
                     if name.lower() in names:
-                        bodies.append(key)
+                        spacecraft.append(key)
                         no_match = False
                 if no_match:
                     raise Exception(
@@ -508,38 +566,53 @@ class Conjunctions:
                         ' Solar Orbiter, Parker Solar Probe, BepiColombo and '\
                         'STEREO-A are not yet supported -- got \'{}\''
                         .format(name))
-            bodies = sorted(bodies)
-        else:
-            bodies = self.bodies
-        
-        # flatten conjunctions
-        conjunctions = [c for conjs in self.allconjs for c in conjs]
-                
-        if category:
+            spacecraft = sorted(spacecraft)
+            
+            if len(spacecraft) == 1:
+                for conj in conjunctions:
+                    for sc in conj.spacecraft:
+                        if sc == spacecraft[0]:
+                            spacecraft_out.append(conj)
+            else:
+                for conj in conjunctions:
+                    same_spacecraft = []
+                    for b in range(len(conj.spacecraft)):
+                        same_spacecraft.append(conj.spacecraft[b] == spacecraft[b])
+                    if all(same_spacecraft): # find conjunctions for only the spacecraft specified
+                        spacecraft_out.append(conj)
+            out.append(set(spacecraft_out))
+
+        if label:
             # handle string input
-            if type(category) == str:
-                category = category.split(',')
-                category = [cat.strip() for cat in category]
-            # if category is non_conj, change set of conjunctions to be searched
-            if any(category) in [['non_conj'], ['non_conjs'], ['non conj'], ['non conjs'], ['None']]:
+            if type(label) == str:
+                label = label.split(',')
+                label = [lab.strip() for lab in label]
+            # if label is non_conj, change set of conjunctions to be searched
+            if any(label) in [['non_conj'], ['non_conjs'], ['non conj'], ['non conjs'], ['None']]:
                 conjunctions = self.non_conjs
-                category = [None]
+                label = [None]
             for conj in conjunctions:
-                for i in range(len(conj.category)):
-                    for j in range(len(category)):
-                        if conj.category[i] == category[j]: # find matching categories
-                            category_out.append(conj)
-            out.append(category_out)
+                for i in range(len(conj.label)):
+                    for j in range(len(label)):
+                        if conj.label[i] == label[j]: # find matching labels
+                            label_out.append(conj)
+            out.append(label_out)
+        if time:
+            for conj in conjunctions:
+                # determine if time falls between conjunction start and end
+                if (conj.times[0] <= t.Time(time)) and (conj.times[-1] >= t.Time(time)):
+                    time_out.append(conj)
+            out.append(time_out)
         if start_time:
             for conj in conjunctions:
                 # find matching start times within an hour
-                if abs(conj.start.jd - t.Time(start_time).jd) < t.TimeDelta(1*u.hr).to_value('jd'):
+                if abs(conj.times[0].jd - t.Time(start_time).jd) < t.TimeDelta(1*u.hr).to_value('jd'):
                     start_out.append(conj)
             out.append(start_out)
         if end_time:
             for conj in conjunctions:
                 # find matching end times within an hour
-                if abs(conj.end.jd - t.Time(end_time).jd) < t.TimeDelta(1*u.hr).to_value('jd'):
+                if abs(conj.times[-1].jd - t.Time(end_time).jd) < t.TimeDelta(1*u.hr).to_value('jd'):
                     end_out.append(conj)
             out.append(end_out)
         if length:
@@ -548,31 +621,21 @@ class Conjunctions:
                 if conj.length == length:
                     length_out.append(conj)
             out.append(length_out)
-        if bodies:
-            for conj in conjunctions:
-                same_bodies = []
-                for b in range(len(conj.bodies)):
-                    same_bodies.append(conj.bodies[b] == bodies[b])
-                if all(same_bodies): # find conjunctions for only the bodies specified
-                    bodies_out.append(conj)
-            out.append(set(bodies_out))
 
         # output is the intersection of all the sets for each parameter
-        if len(out) == 1:
-            out = out[0]
-        elif len(out) == 2:
-            out = set(out[0]).intersection(set(out[1]))
-        elif len(out) == 3:
-            out = set(out[0]).intersection(set(out[1]), set(out[2]))
-        elif len(out) == 4:
-            out = set(out[0]).intersection(set(out[1]), set(out[2]), set(out[3]))
-        elif len(out) == 5:
-            out = set(out[0]).intersection(set(out[1]), set(out[2]), set(out[3]), set(out[4]))
+        if len(out) >= 1:
+             for i, s in enumerate(out):
+                 if i == 0:
+                     out_set = set(s)
+                 else:
+                     out_set = out_set.intersection(set(s))
         
-        if len(out) == 0:
-            print('No conjunctions found for the specified search parameters.'\
-                  ' Try using fewer or different parameters.')
-        else:
-            print('{} conjunctions correspond to the search parameters.'.format(len(out)))
+        if verbose:
+            if len(out) == 0:
+                print('No conjunctions found for the specified search parameters.'\
+                      ' Try using fewer or different parameters.')
+            else:
+                print('{} conjunctions correspond to the search parameters.'.format(len(out_set)))
+            
+        return list(out_set)
         
-        return list(out)

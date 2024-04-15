@@ -11,40 +11,306 @@ import astropy.units as u
 import astropy.time as t
 from astropy.coordinates import SkyCoord
 from sunpy.coordinates import frames #HeliocentricInertial, HeliographicCarrington
-import torch
+#import torch
 from scipy.interpolate import CubicSpline
 import matplotlib.pyplot as plt
+import pandas as pd
+import warnings
+import dill as pickle
+from bisect import bisect_left, bisect_right
 
+def custom_formatwarning(msg, category, *args, **kwargs):
+    # ignore everything except the warning category and message
+    return '\n{}: {} \n'.format(category.__name__, msg)
+
+warnings.formatwarning = custom_formatwarning # set warning formatting
 
 class TimeSeries:
     
     def __init__(self):
-        self.variable = str
-        self.units = str
-        self.times = []
-        self.dt = str
-        self.bodies = []
-        self.coords = []
+        self.spacecraft = []
+        self.variables = []
+        self.units = []
         self.data = []
+        # keys: 'times', 'r', 'lat', 'lon', *variables, 'spacecraft', 'conjunction'
+
         
     def __repr__(self):
-        return ('Timeseries for variable {} with units {} and bodies {} between {} and {}'
-                .format(self.variable, self.units, self.bodies,
-                        self.times[0].iso[0:10], self.times[-1].iso[0:10]))
+        return ('Synthetic timeseries for {} between {} and {}, for variables: {}'
+                .format(self.sc, self.data.loc[0,'times'], 
+                        self.data.loc[-1,'times'], self.variables))
     
     def __str__(self):
-        return ('Timeseries for variable {} with units {} and bodies {} between {} and {}'
-                .format(self.variable, self.units, self.bodies,
-                        self.times[0].iso[0:10], self.times[-1].iso[0:10]))
+        return ('Synthetic timeseries for {} between {} and {}, for variables: {}'
+                .format(self.sc, self.data.loc[0,'times'], 
+                        self.data.loc[-1,'times'], self.variables))
             
     # Function to find the index of the closest element in a list to a given value
-    def _closest(self, lst, value):
-        lst = np.asarray(lst)
-        idx = (np.abs(lst - value)).argmin()
-        return idx
+    def _nearest(self, lst, value):
+        idx = bisect_left(lst, value)
+        if idx == len(lst):
+            return idx - 1
+        if idx == 0:
+            return 0
+        if lst[idx] - value < value - lst[idx-1]:
+            return idx
+        else:
+            return idx - 1
+    
+    def _parse_sc_names(self, spacecraft_names):
+        # parse specified spacecraft names and store in self.spacecraft
+        if type(spacecraft_names) == str:
+            spacecraft_names = spacecraft_names.split(',')
+        
+        allowed_names = {'so': ['so', 'solar orbiter', 'solo'], 
+                         'psp': ['psp', 'parker solar probe'], 
+                         'bepi': ['bepi', 'bepicolombo', 'bepi colombo'], 
+                         'sta': ['sa', 'sta', 'stereo-a', 'stereo a', 'stereoa'], 
+                         'earth': ['earth', 'erde', 'aarde', 'terre', 'terra', 
+                                   'tierra', 'blue dot', 'home', 'sol d']}
+        
+        spacecraft = []
+        for name in spacecraft_names:
+            name = name.strip()
+            no_match = True
+            for key, names in allowed_names.items():
+                if name.lower() in names:
+                    spacecraft.append(key)
+                    no_match = False
+            if no_match:
+                raise Exception('Invalid spacecraft name. Specify choice with '\
+                                'a string containing the name of a spacecraft,'\
+                                ' for example: \'Solar Orbiter\' or \'SolO\'.'\
+                                ' spacecraft other than Solar Orbiter, Parker'\
+                                ' Solar Probe, BepiColombo and STEREO-A are'\
+                                ' not yet supported -- got \'{}\''
+                                .format(name))
+                    
+        self.spacecraft = sorted(spacecraft)
+    
+    def get_timeseries(self, spacecraft_names, variables, sim, coords, set_labels=False):
+        """
+        Query synthetic timeseries for chosen spacecraft and specified 
+        simulation variables for given time interval and write data to .csv file
+        
+        Parameters
+        ----------
+        spacecraft_names : 'list'
+            List of allowed spacecraft names. 
+            Choose from Simulation.spacecraft
+        time_interval : 'list'
+            List of strings, datetime or astropy.Time objects.
+            Interval over which timeseries is queried: [start_time, end_time]
+        variables : 'list'
+            List of strings of simulation variables.
+            Choose from Simulation.variables
+        sim : '~simulation.Simulation'
+            Simulation object 
+        coords: '~coordinates.Coordinates'
+            Coordinates object
 
-    def get_timeseries(self, sim, variable, spacecraft_names=None, times=None, 
-                       conj=None, plot=False):
+        Returns
+        -------
+        'str'
+            Path to .csv file with the following naming convention: 
+            timeseries_[spacecraft_names]_[time_interval].csv
+
+        """
+        # parse variables
+        if type(variables) == str:
+            variables = [var.strip() for var in variables.split(',')]
+        for v in variables:
+            for var_key, var_names in sim.allowed_var_names.items():
+                if v in var_names:
+                    self.variables.append(var_key)
+                    self.units.append(sim.variables.get(var_key)[1])
+                    
+        self._parse_sc_names(spacecraft_names)
+        
+        path = './timeseries/{}_timeseries_{}_{}_{}.csv'.format(sim.name,
+                '_'.join(self.spacecraft), coords.times[0].iso[0:10], coords.times[-1].iso[0:10])
+        
+        all_timeseries = []
+        for sc in self.spacecraft:
+            print("Querying timeseries for {}".format(sc))
+            
+            timeseries = self.query_sim_data(sc, self.variables, sim, coords)
+            timeseries['spacecraft'] = sc
+            
+            all_timeseries.append(timeseries)
+            
+        all_timeseries = pd.concat(all_timeseries, ignore_index=True, sort=False)
+        all_timeseries.to_csv(path)
+        self.data = all_timeseries
+        
+        if set_labels:
+            # get labels
+            labels = self.get_labels(sim, coords)
+            # assign labels
+            all_timeseries['conjunction'] = 'none'
+            all_timeseries['conjunction_time'] = 'none'
+            for sc in self.spacecraft:
+                for label in labels[sc]:
+                    # Populate the new column for rows satisfying the condition
+                    all_timeseries.loc[((all_timeseries['times'] == label[0]) & (all_timeseries['spacecraft'] == sc)), 'conjunction'] = label[2]
+                    all_timeseries.loc[((all_timeseries['times'] == label[0]) & (all_timeseries['spacecraft'] == sc)), 'conjunction_time'] = label[1]
+            all_timeseries.to_csv(path)
+            self.data = all_timeseries
+        
+        print("Timeseries saved to {}".format(path))
+    
+        return path
+        
+    
+    def query_sim_data(self, sc, variables, sim, coords):
+        """
+        Query synthetic timeseries for a chosen spacecraft from a Simulation
+        object
+        
+        Parameters
+        ----------
+        sc : 'str'
+            Spacecraft name. Choose from Simulation.spacecraft
+        time_interval : 'list'
+            List of strings, datetime or astropy.Time objects.
+            Interval over which timeseries is queried: [start_time, end_time]
+        variables : 'list'
+            Simulation variable for the timeseries. Choose from Simulation.variables
+        sim : '~simulation.Simulation'
+            Simulation object from which data is queried
+        
+        Returns
+        -------
+        '~pandas.DataFrame'
+            DataFrame with times in the first column, and chosen variables in 
+            subsequent columns.            
+        
+        """
+        
+        # get spacecraft coordinates at times
+        sc_coords = np.array([[c.distance.au, c.lat.rad, c.lon.rad] for c in coords.sc_coords[sc]]).transpose()
+        r_spline = CubicSpline(coords.times_mjd, sc_coords[0])
+        lat_spline = CubicSpline(coords.times_mjd, sc_coords[1])
+        lons = sc_coords[2]
+        for l, lon in enumerate(lons):
+            if lon < 0:
+                lons[l] = lon + 2*np.pi
+        lon_spline = CubicSpline(coords.times_mjd, coords._loop_longitudes(lons))
+        
+        # TODO: figure out how to deal with longitude range change
+        
+        # get timeseries
+        times = sim.sc_cell_times[sc]
+        timeseries = {}
+        timeseries['times'] = times
+        timeseries['r'] = r_spline(times)
+        timeseries['lat'] = lat_spline(times)
+        lons = lon_spline(times)
+        for l, lon in enumerate(lons):
+            if lon > np.pi:
+                lons[l] = lon - 2*np.pi
+        timeseries['lon'] = lons
+        
+        for var in variables:
+            values = []
+            for idxs in sim.sc_cell_idxs[sc]:
+                values.append(sim.get_value(var, idxs))
+            timeseries[var] = values
+            
+        return pd.DataFrame(timeseries)
+    
+
+    def get_labels(self, sim, coords, max_search_radius = [5*u.deg, 0.016*u.au]):
+        # in: V, sc_cell_idxs
+        # out: self.data[label] = labels
+        
+        flows_times = {}
+        flows_coords = {}
+        for sc in self.spacecraft:
+            
+            print("Computing flow paths for {}...".format(sc))
+            
+            subset = self.data[self.data['spacecraft'] == sc]
+            
+            flow_times = [] # times [mjd]
+            flow_coords = [] # r, theta, phi
+            for time, lon, lat, r in zip(subset['times'].values, subset['lon'].values, subset['lat'].values, subset['r'].values):
+                if lon < 0:
+                    lon = lon + 2*np.pi
+                coord = [r, lat, lon]
+                dts, flow_coord, _, _ = sim.trace_flow(coord, max_r = 1.1)
+                flow_times.append(np.array(dts) + time)
+                flow_coords.append(np.array(flow_coord))
+            flows_times[sc] = flow_times
+            flows_coords[sc] = flow_coords
+            
+            # # quick save flow paths for each spacecraft in case of interruption
+            # with open('./restart/flow_paths_{}.pickle'.format('_'.join(flow_times.keys())), 'wb') as file:
+            #     # save data
+            #     pickle.dump([flow_times, flow_idxs], file)
+            
+        print("Flow paths acquired.")
+        
+        rad_limit = max_search_radius[0].to_value(u.rad)
+        au_limit = max_search_radius[1].to_value(u.au)
+        
+        labels = {}
+        for sc1 in self.spacecraft:
+            print("Finding conjunctions for {}...".format(sc1))
+            label = []
+            other_spacecraft = [sc for sc in self.spacecraft if sc != sc1]
+            for time, lon, lat, r in zip(self.data['times'].values, self.data['lon'].values, self.data['lat'].values, self.data['r'].values):
+                for sc2 in other_spacecraft:
+                    for flow_times, flow_coords in zip(flows_times[sc2], flows_coords[sc2]):
+                        for flow_time, flow_coord in zip(flow_times, flow_coords):
+                            if abs(lon - flow_coord[2]) < rad_limit:
+                                if abs(lat - flow_coord[1]) < rad_limit:
+                                    if abs(r - flow_coord[0]) < au_limit:
+                                        if abs(time - flow_time) < 0.26:
+                                            label.append([time, flow_times[0], sc2])
+            labels[sc1] = label
+            
+        # labels = {}
+        # for sc1 in self.spacecraft:
+        #     print("Finding conjunctions for {}...".format(sc1))
+        #     label = []
+            
+        #     # Get spacecraft other than sc1
+        #     other_spacecraft = [sc for sc in self.spacecraft if sc != sc1]
+            
+        #     # Iterate over rows of self.data
+        #     for idx, row in self.data.iterrows():
+        #         time, lon, lat, r = row['times'], row['lon'], row['lat'], row['r']
+                
+        #         # Iterate over other spacecraft
+        #         for sc2 in other_spacecraft:
+        #             for flow_times, flow_coords in zip(flows_times[sc2], flows_coords[sc2]):
+                        
+        #                 # Calculate differences with tolerances
+        #                 lon_diff = np.abs(lon - flow_coords[:, 2])
+        #                 lat_diff = np.abs(lat - flow_coords[:, 1])
+        #                 r_diff = np.abs(r - flow_coords[:, 0])
+        #                 time_diff = np.abs(time - flow_times)
+                        
+        #                 # Check if any match within tolerances
+        #                 mask = (lon_diff <= rad_limit) & (lat_diff <= rad_limit) & \
+        #                        (r_diff <= au_limit) & (time_diff <= 0.26)
+                        
+        #                 # Add matching points to label
+        #                 if np.any(mask):
+        #                     match_idx = np.argmax(mask)
+        #                     match_time = flow_times[match_idx]
+        #                     label.append([time, match_time, sc2])
+        #                     break  # Break the loop if a match is found
+            
+        #     # Store labels for sc1
+        #     labels[sc1] = label
+                    
+        return labels
+        
+        
+        # TODO: update this function
+    def get_timeseries_from_conj(self, sim, variable, conj, plot=False):
 
         sim._get_times(mjd=True)
         sim._get_variables()
@@ -53,158 +319,47 @@ class TimeSeries:
         coords = []
         
         omega = (2*np.pi/25.38*u.rad/u.day).to(u.rad/u.hour)
-        
-        if conj:
-            bodies = conj.bodies
-            times = conj.times
+
+        for i in range(len(conj.times)):
+            data_array, units = sim.get_data(variable, conj.times[i])
+            values = []
+            coord = []
             
-            for i in range(len(conj.times)):
-                data_array, units = sim.get_data(variable, conj.times[i])
-                values = []
-                coord = []
-                
-                for j in range(len(bodies)):
-                    if sim.is_stationary:
-                        dt = t.TimeDelta(conj.times[i] - sim.times[0]).to_value('hr')
-                        dlon = dt*omega.value
-                        phi_idx = sim._closest(sim.phi.value + dlon, 
-                                               conj.coords[i][j].lon.rad)
-                    else:
-                        phi_idx = sim._closest(sim.phi.value, 
-                                               conj.coords[i][j].lon.rad)
-                    theta_idx = sim._closest(sim.theta.value, 
-                                             conj.coords[i][j].lat.rad)
-                    r_idx = sim._closest(sim.r.value, 
-                                         conj.coords[i][j].distance.au)
-                        
-                    obstime = sim.times[self._closest(sim.times_mjd, conj.times[i].mjd)]
+            for j in range(len(conj.spacecraft)):
+                if sim.is_stationary:
+                    dt = t.TimeDelta(conj.times[i] - sim.times[0]).to_value('hr')
+                    dlon = dt*omega.value
+                    phi_idx = sim._nearest(sim.phi.value + dlon, 
+                                           conj.coords[i][j].lon.rad)
+                else:
+                    phi_idx = sim._nearest(sim.phi.value, 
+                                           conj.coords[i][j].lon.rad)
+                theta_idx = sim._nearest(sim.theta.value, 
+                                         conj.coords[i][j].lat.rad)
+                r_idx = sim._nearest(sim.r.value, 
+                                     conj.coords[i][j].distance.au)
                     
-                    values.append(data_array[phi_idx, theta_idx, r_idx])
-                    coord.append(SkyCoord(
-                        sim.phi[phi_idx], sim.theta[theta_idx], sim.r[r_idx], 
-                        frame = frames.HeliocentricInertial(obstime = obstime))
-                        )
-                data.append(values)
-                coords.append(coord)
-            
-        else:
-            if type(spacecraft_names) == str:
-                spacecraft_names = spacecraft_names.split(',')
-            
-            allowed_names = {'so': ['so', 'solar orbiter', 'solo'], 
-                             'psp': ['psp', 'parker solar probe'], 
-                             'bepi': ['bepi', 'bepicolombo', 'bepi colombo'], 
-                             'sa': ['sa', 'sta', 'stereo-a', 'stereo a', 'stereoa'], 
-                             'earth': ['earth', 'erde', 'aarde', 'terre', 'terra', 
-                                       'tierra', 'blue dot', 'home', 'sol d']}
-            
-            bodies = []
-            for name in spacecraft_names:
-                name = name.strip()
-                no_match = True
-                for key, names in allowed_names.items():
-                    if name.lower() in names:
-                        bodies.append(key)
-                        no_match = False
-                if no_match:
-                    raise Exception(
-                        'Invalid spacecraft name. Specify choice with a string'\
-                        ' containing the name of a spacecraft, for example: '\
-                        '\'Solar Orbiter\' or \'SolO\'. Spacecraft other than'\
-                        ' Solar Orbiter, Parker Solar Probe, BepiColombo and '\
-                        'STEREO-A are not yet supported -- got \'{}\''.format(name))
-                        
-            bodies = sorted(bodies)
-
-            for i in range(len(sim.times)):
-    
-                data_array, units = sim.get_data(variable, sim.times[i])
-                values = []
-                coord = []
-
-                for j in range(len(bodies)):
-                    if sim.is_stationary:
-                        dt = t.TimeDelta(conj.times[i] - sim.times[0]).to_value('hr')
-                        dlon = dt*omega.value
-                        phi_idx = sim._closest(sim.phi.value + dlon, 
-                                               self.coords[j][i].lon.rad)
-                    else:
-                        phi_idx = sim._closest(sim.phi.value, 
-                                               self.coords[j][i].lon.rad)
-                    theta_idx = sim._closest(sim.theta.value, 
-                                             self.coords[j][i].lat.rad)
-                    r_idx = sim._closest(sim.r.value, 
-                                         self.coords[j][i].distance.au)
-                    values.append(values[phi_idx, theta_idx, r_idx])
-                    coord.append(SkyCoord(
-                        sim.phi[phi_idx], sim.theta[theta_idx], sim.r[r_idx], 
-                        frame = frames.HeliocentricInertial(obstime = times[i]))
-                        )
+                obstime = sim.times[self._nearest(sim.times_mjd, conj.times[i].mjd)]
+                
+                values.append(data_array[phi_idx, theta_idx, r_idx])
+                coord.append(SkyCoord(
+                    sim.phi[phi_idx], sim.theta[theta_idx], sim.r[r_idx], 
+                    frame = frames.HeliocentricInertial(obstime = obstime))
+                    )
             data.append(values)
             coords.append(coord)
+
         data = np.asarray(data).transpose()
         coords = np.asarray(coords).transpose()
         
         self.variable = variable
         self.units = units
-        self.times = times
-        self.dt = sim.dt
+        self.times = conj.times
         self.coords = coords
-        self.bodies = bodies
-        self.data = data
-        
-    def get_truncated_tensor(self, label, new_length=5*u.day, pad_mode='constant', 
-                             discard_mostly_padded=True, conj=False):
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        try:
-            # find number of data points per truncated timeseries from chosen 
-            # length and timeseries timestep
-            num_of_pts = round(new_length.to_value('hr')/self.dt.to_value('hr'))
-        except AttributeError:
-            if conj:
-                num_of_pts = round(new_length.to_value('hr')/conj.dt.to_value('hr'))
-            else:
-                raise Exception('Timeseries object does not have a timestep '\
-                                '\'dt\' defined. Please pass a Conjunction to conj.')
-        length = len(self.data[0])
-        # find number of truncated timeseries created from each original timeseries
-        num_of_subsets = length/num_of_pts
-        truncated_data = []
-        for data in self.data:
-            subsets = []
-            # truncate number of subsets to integer - equiv. to int(subsets // 1)
-            for s in range(int(num_of_subsets)):
-                subsets.append(data[s*num_of_pts:(s+1)*num_of_pts])
-            # does the last subset need to be padded? rounded to 2 d.p. due to 
-            # precision issue: round(0.999 % 1, 2) will give 1.00
-            if round(num_of_subsets % 1, 2) == 0.00 or round(num_of_subsets % 1, 2) == 1.00:
-                truncated_ts = subsets
-            else:
-                last = data[int(num_of_subsets)*num_of_pts:]
-                if len(last) < round(num_of_pts/2) and discard_mostly_padded:
-                    truncated_ts = subsets
-                else:
-                    # pad_mode = 'constant' pads with zeros, alternative: pad_mode = 'mean'
-                    padded_subset = np.pad(last, (0,num_of_pts-len(last)), mode=pad_mode)
-                    subsets.append(padded_subset)
-                    truncated_ts = subsets
-            if len(truncated_ts) > 0:
-                truncated_data.append(truncated_ts)
-            #else:
-                #print(len(last), round(num_of_pts/2), round(num_of_subsets % 1, 2), truncated_ts)
-        if len(truncated_data) > 0:
-            truncated_data = np.array(truncated_data)
-            truncated_data = torch.tensor(truncated_data, device=device)
-            truncated_data = torch.transpose(truncated_data, 0, 1)
-            truncated_data = torch.flatten(truncated_data, 1, -1)
-            labels = torch.full([len(truncated_data)], float(label), device=device)
-        else: # return None if no data
-            truncated_data = None
-            labels = None
-        
-        return truncated_data, labels
+        for i, sc in enumerate(conj.spacecraft):
+            self.data[sc] = data[i]
     
-            
+    # TODO: move to features
     def get_lag(self, resamp_factor=2, check_lag_plots=False):
         
         lags = []
@@ -226,7 +381,7 @@ class TimeSeries:
                     c = np.correlate(spline1(xs)-np.mean(self.data[i]), 
                                      spline2(xs)-np.mean(self.data[j]), 
                                      'full')
-
+    
                     if len(c)%2 == 0:
                         lag = np.argmax(c)-len(c)/2
                     else:
@@ -247,7 +402,7 @@ class TimeSeries:
                                              'font.family': 'Computer Modern Roman'})
                         
                         # Plotting options
-                        body_index = {'bepi': 0, 'earth': 1, 'psp': 2, 'so': 3, 'sta': 4}
+                        sc_index = {'bepi': 0, 'earth': 1, 'psp': 2, 'so': 3, 'sta': 4}
                         colors = ['indianred', 'darkgreen', 'slategrey', 
                                   'steelblue', 'sandybrown', 'slategrey']
                         labels = ['BepiColombo', 'Earth', 'PSP', 
@@ -255,8 +410,8 @@ class TimeSeries:
                         
                         # FIG 1: cross-correlation plot - max gives lag value
                         title = ('Cross-correlation of timeseries for {} and {}'
-                                 .format(labels[body_index.get(self.bodies[i])],
-                                         labels[body_index.get(self.bodies[j])]))
+                                 .format(labels[sc_index.get(self.spacecraft[i])],
+                                         labels[sc_index.get(self.spacecraft[j])]))
                         
                         fig1 = plt.figure(figsize=(8,8), dpi=300)
                         ax = fig1.add_subplot()
@@ -266,7 +421,7 @@ class TimeSeries:
                         
                         # FIG 2: synchronised timeseries - features should overlap
                         title = 'Synchronized timeseries at {}'.format(
-                            ', '.join([labels[body_index.get(body)] for body in self.bodies])
+                            ', '.join([labels[sc_index.get(sc)] for sc in self.spacecraft])
                             )
                         
                         fig2 = plt.figure(figsize=(8,8), dpi=300)
@@ -278,25 +433,25 @@ class TimeSeries:
                         xs1 = np.arange(0, len(xs))
                         xs2 = xs1.copy() + lag
                         ax.plot(xs1*xs_step_in_hours, spline1(xs), 
-                                color=colors[body_index.get(self.bodies[0])], 
-                                label=labels[body_index.get(self.bodies[0])])
+                                color=colors[sc_index.get(self.spacecraft[0])], 
+                                label=labels[sc_index.get(self.spacecraft[0])])
                         ax.plot(xs2*xs_step_in_hours, spline2(xs), 
-                                color=colors[body_index.get(self.bodies[1])], 
-                                label=labels[body_index.get(self.bodies[1])])
+                                color=colors[sc_index.get(self.spacecraft[1])], 
+                                label=labels[sc_index.get(self.spacecraft[1])])
                         
                         ax.set_title(title, pad=45, fontsize = 'x-large')
                         ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.1), 
-                                  ncol=len(self.bodies), frameon=False, fontsize='large')
+                                  ncol=len(self.spacecraft), frameon=False, fontsize='large')
                         ax.set_xlabel(r'$\mathrm{Duration \: [hours]}$', 
                                       fontsize='x-large', labelpad=10)
-
+    
                     lags.append(lag*self.dt.to_value('hr'))
                     pcoefs.append(np.corrcoef(synced_data1, synced_data2))
             ignore_duplicates.append(i)
-
+    
         return lags, pcoefs
     
-        
+    # TODO: move to features
     def get_expected_lag(self, conj, sim, coord, check_expected_plot=True):
         
         sim._get_times(mjd=True)
@@ -320,11 +475,11 @@ class TimeSeries:
                     omega = (2*np.pi/25.38*u.rad/u.day).to(u.rad/u.hour)
                     dt = t.TimeDelta(conj.times[idx] - sim.times[0]).to_value('hr')
                     dlon = dt*omega.value
-                    phi_idx = self._closest(sim.phi.value + dlon, phi[i])
+                    phi_idx = self._nearest(sim.phi.value + dlon, phi[i])
                 else:
-                    phi_idx = self._closest(sim.phi.value, phi[i])
-                theta_idx = self._closest(sim.theta.value, theta[i])
-                r_idx = self._closest(sim.r.value, r[i])
+                    phi_idx = self._nearest(sim.phi.value, phi[i])
+                theta_idx = self._nearest(sim.theta.value, theta[i])
+                r_idx = self._nearest(sim.r.value, r[i])
                 
                 sw_vel.append(
                     [(V1[phi_idx, theta_idx, r_idx]*units).to_value(u.au/u.hr), 
@@ -345,7 +500,7 @@ class TimeSeries:
                 )
             lag.append(X/Vx)
         lag.append(X/Vx)
-
+    
         meanlag = np.mean(lag)
         minlag = min(lag)
         maxlag = max(lag)

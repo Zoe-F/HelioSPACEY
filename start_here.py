@@ -1,92 +1,93 @@
 # -*- coding: utf-8 -*-
 """
-Created on Thu Mar 23 10:46:48 2023
+Created on Tue Feb 20 15:09:52 2024
 
 @author: Zoe.Faes
 """
+
 #################################  IMPORTS  ###################################
 
-# useful external imports
+# external imports
 import numpy as np
 import astropy.units as u
 import astropy.time as t
+import pandas as pd
 from sunpy.coordinates import frames
 from astropy.coordinates import SkyCoord
-import dill as pickle
 from datetime import datetime
 import matplotlib.pyplot as plt
 
-# toolkit imports
+# helio-spacey imports
 from coordinates import Coordinates
 from conjunction import Conjunctions
 from simulation import Simulation
 from timeseries import TimeSeries
-import plotter as p
+import plotter as plot
+import features as feat
+
+########################  FIND SPACECRAFT COORDINATES  ########################
+
+# Specify times
+times = np.arange(t.Time("2022-01-01 00:00:00.000"), 
+                  t.Time("2022-07-01 00:00:00.000"),
+                  t.TimeDelta(6*u.hour))
+
+# Specify spacecraft
+spacecraft_names = ['solar orbiter', 'psp', 'stereo a', 'bepi', 'earth']
+
+# Instantiate coordinates object
+coords = Coordinates(times, spacecraft_names)
+print(coords)
+
+# Position of Solar Orbiter at noon on Pi day 2022
+time = t.Time("2022-03-14 12:00:00.000")
+so_coords = coords.sc_coords['so'][np.where(coords.times == time)][0]
+print("Solar Orbiter position: ", so_coords)
+print("Solar Orbiter distance from Sun: ", so_coords.distance.to(u.au))
+
+time = t.Time("2022-01-01 12:00:00.000")
+psp_coords = coords.sc_coords['psp'][np.where(coords.times == time)][0]
+print("PSP position: ", psp_coords)
+
+# If working with ENLIL simulations, specify path(s) to CDF or netCDF file(s)
+sim_file_path = "./simulations/Zoe_Faes_101922_SH_1/helio/3D_CDF/helio.enlil.0000.cdf"
+# Instantiate simulation object
+sim = Simulation(sim_file_path)
+print(sim)
+
+# Let's find the trajectory of the spacecraft in the simulation
+for sc in coords.spacecraft:
+    sim.get_cells_from_sc_coords(coords, sc)
+
+# Check simulation cells and spacecraft coordinates are consistent
+plot.check_sc_sim_consistency(coords, sim, spacecraft=sim.spacecraft)
+
+# Get timeseries for spacecraft
+ts = TimeSeries()
+ts.get_timeseries(sim.spacecraft, list(sim.variables.keys())[3:], sim, coords, set_labels=False)
+
+# plot timeseries
+plot.simple_timeseries(ts, times, ['B1', 'B2', 'B3', 'V1', 'V2', 'V3', 'D', 'T'], ['T', 'T', 'T', 'm/s', 'm/s', 'm/s', 'kg/m3', 'K'], ['so'])
+
+# plot simulation slice
+plot.plot_ENLIL_slice(sim, 'V1', times[0], lat=90*u.deg)
+
+# generate animation
+plot.timeseries_reference('so', [times[0], times[-1]], 'V1', ts, sim)
+
+# Animate flow tracing
+plot_times = np.arange(t.Time("2022-01-01 00:00:00.000"), 
+                        t.Time("2022-04-01 00:00:00.000"),
+                        t.TimeDelta(3*u.hour))
+plot_coords = Coordinates(plot_times, spacecraft_names)
+plot.flow_from_spacecraft(plot_coords, 'psp', sim_file_path, cmap='plasma')
 
 
-########################  IF PICKLE FILE: START HERE  #########################
-
-filepath = './Timeseries/Zoe_Faes_101922_SH_1_20200701_20250701_6h.pickle'
-
-# load data
-with open(filepath, 'rb') as file:
-    # file structure: [Coordinates, Conjunctions, Simulation]
-    data = pickle.load(file)
-    coordinates = data[0]
-    conj = data[1]
-    sim = data[2]
-
-# examples
-print('Available simulation variables to chose from: ')
-for vname, var in sim.variables.items():
-    print(vname, var[1])
-    if vname == 'V1':
-        p.plot_ENLIL_slice(sim, vname, sim.times[0], lat=90*u.deg)
-
-for c in conj.cones:
-    if c.length > 100*u.day:
-        p.plot_timeseries(c.timeseries['V1'])
-
-conjs = conj.find_conjunctions(category='parker spiral', spacecraft_names='solar orbiter, psp')
-for c in conjs[:3]:
-    p.plot_conjunction2D(coordinates, c, ENLIL=True, sim=sim, variable='V1')
-    
-# to train a NN, run the nn.py as a script - remove any pickle files you don't have from the 'file_names' list
-
-
-
-
-#######################  IF NO PICKLE FILE: START HERE  #######################
-
-def __init__(start_time = 'auto', end_time = 'auto', dt = 'auto', 
-                 satellite_names = ['solar orbiter', 'parker solar probe', 'earth'], 
-                 sim_file_paths = None, coordinate_system = frames.HeliocentricInertial()):
-        
-    print("Initialising VISTA...")
-    
-    if sim_file_paths:
-        sim = Simulation(sim_file_paths)
-    else:
-        sim = None
-    coordinates = Coordinates(start_time, end_time, dt, satellite_names, sim)
-    coords = c.get_coordinates(c.bodies, c.times, coordinate_system)
-    conj = Conjunctions(c.times, c.bodies, coords)
-    
-    return coordinates, conj, sim
-
-
-# sim_path = '.\Simulations\Zoe_Faes_101922_SH_1\helio\3D_CDF\helio.enlil.0000.cdf'
-    
-# #SO kernel: start_time = '2020-02-11', end_time = '2030-11-20'
-# coordinates, conj, sim = __init__(start_time = '2020-07-01 00:00:00.000', 
-#                                   end_time = '2021-01-01 00:00:00.000', 
-#                                   dt = 6*u.hour, 
-#                                   satellite_names = ['solar orbiter', 
-#                                                       'parker solar probe', 
-#                                                       'earth', 'STEREO-A', 'bepi'], 
-#                                   sim_file_paths = sim_path)
+# # Find conjunctions
+# conj = Conjunctions(coords.times, coords.spacecraft, coords.sc_coords, 
+#                     sc_cell_idxs = sim.sc_cell_idxs, 
+#                     sc_cell_times = sim.sc_cell_times)
 
 # conj.get_all_conjunctions(sim)
 
-##########################  MISCELLANEOUS TESTING  ###########################
 
