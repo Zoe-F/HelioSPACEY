@@ -39,15 +39,15 @@ for sc in coords.spacecraft:
 # # Check simulation cells and spacecraft coordinates are consistent
 # plot.sc_sim_consistency(coords, sim, spacecraft=sim.spacecraft)
 
-# # Instantiate timeseries
-# ts = Timeseries()
+# Instantiate timeseries
+ts = Timeseries()
 
-# # Get timeseries & set labels
-# spacecraft = sim.spacecraft # all available spacecraft in sim
-# variables = list(sim.variables.keys())[3:] # all available variables in sim
-# ts.get_timeseries(spacecraft, variables, sim, coords, set_labels=True)
+# Get timeseries & set labels
+spacecraft = sim.spacecraft # all available spacecraft in sim
+variables = list(sim.variables.keys())[3:] # all available variables in sim
+ts.get_timeseries(spacecraft, variables, sim, coords, set_labels=True)
 
-# Animate flow tracing to confirm timeseries labels
-# Change spacecraft as needed
-# WARNING: SLOW. Run it once for all of 2022
-plot.flow_from_spacecraft(coords, 'psp', sim_file_path, cmap='plasma')
+# # Animate flow tracing to confirm timeseries labels
+# # Change spacecraft as needed
+# # WARNING: SLOW. Run it once for all of 2022
+# plot.flow_from_spacecraft(coords, 'psp', sim_file_path, cmap='plasma')
