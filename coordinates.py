@@ -59,13 +59,13 @@ class Coordinates:
         self.sc_coords = {} # keys: self.spacecraft
         self.coordinate_system = str
         
-        print('Initializing coordinates...')
+        # print('Initializing coordinates...')
         
         if type(spacecraft_names) == str:
             names = spacecraft_names.split(',')
             spacecraft_names = [name.strip() for name in names]
             
-        self._parse_sc_names(spacecraft_names)
+        self.spacecraft = self._parse_sc_names(spacecraft_names)
         
         self._set_times(times)
         
@@ -73,7 +73,7 @@ class Coordinates:
         
         self.set_coordinates()
         
-        print('Initialization complete. \n')
+        # print('Initialization complete. \n')
         
     def __repr__(self):
         return ('Coordinates object for {} from {} to {}'.format(
@@ -86,7 +86,7 @@ class Coordinates:
 
     ###########################  PRIVATE FUNCTIONS  ###########################
 
-    def _set_times(self, times, mjd=True):
+    def _set_times(self, times):
         if not (all(isinstance(time, t.Time) for time in times)):
             try:
                 self.times = t.Time(times)
@@ -97,11 +97,26 @@ class Coordinates:
                                 'astropy.time.Time quantity or use a '\
                                 'non-ambiguous time format (eg. ISO).')
         else:
-            self.times = times
+            self.times = np.array(times)
             self.times_mjd = np.array([time.mjd for time in times])
 
-    def _parse_sc_names(self, spacecraft_names):
-        # parse specified spacecraft names and store in self.spacecraft
+    def _parse_sc_names(self, 
+                        spacecraft_names: list[str] | str):
+        """
+        Parse specified spacecraft names and store sorted list in 
+        Timeseries.spacecraft.
+
+        Parameters
+        ----------
+        spacecraft_names : list[str] | str
+            Names of chosen spacecraft.
+
+        Returns
+        -------
+        list[str]
+            List of ordered allowed spacecraft names.
+
+        """
         if type(spacecraft_names) == str:
             spacecraft_names = spacecraft_names.split(',')
         
@@ -128,8 +143,8 @@ class Coordinates:
                                 ' Solar Probe, BepiColombo and STEREO-A are'\
                                 ' not yet supported -- got \'{}\''
                                 .format(name))
-                    
-        self.spacecraft = sorted(spacecraft)
+
+        return sorted(spacecraft)
         
     def _get_SPICE_kernels(self):
         # Get kernels corresponding to specified spacecraft
@@ -327,9 +342,6 @@ class Coordinates:
     ###########################  PUBLIC FUNCTIONS  ############################
     
     
-    # gets coordinates in a specified coordinate system from SPICE kernels for 
-    # a set of spacecraft for given times. Currently supported spacecraft:
-    # Solar Orbiter, Parker Solar Probe, BepiColombo, STEREO-A and Earth.
     def set_coordinates(self, 
                         coordinate_system: frames.SunPyBaseCoordinateFrame = frames.HeliocentricInertial()):
         """
@@ -338,7 +350,7 @@ class Coordinates:
 
         Parameters
         ----------
-        coordinate_system : frames.SunPyBaseCoordinateFrame, optional
+        coordinate_system : sunpy.coordinates.frames.SunPyBaseCoordinateFrame, optional
             Coordinate frame to be used for coordinates representation. 
             The default is frames.HeliocentricInertial().
 
@@ -363,11 +375,44 @@ class Coordinates:
                 ).transform_to(self.coordinate_system)
 
 
-    # gets coordinates in a specified coordinate system from SPICE kernels for 
-    # a set of spacecraft for given times. Currently supported spacecraft:
-    # Solar Orbiter, Parker Solar Probe, BepiColombo, STEREO-A and Earth.
-    def get_sc_coordinates(self, spacecraft=None, times=None, coordinate_system=frames.HeliocentricInertial()):
+    def get_sc_coordinates(self, 
+                           spacecraft: str | None = None, 
+                           times: np.ndarray[t.Time] | None = None, 
+                           coordinate_system: frames.SunPyBaseCoordinateFrame = frames.HeliocentricInertial()):
+        """
+        Get coordinates from SPICE kernels for a spacecraft for given times in 
+        a specified coordinate system. Currently supported spacecraft:
+        Solar Orbiter, Parker Solar Probe, BepiColombo, STEREO-A and Earth.
+        NOTE: If function is called without keywords, it stores coordinates for
+        all self.spacecraft and self.times in self.sc_coords and returns None.
 
+        Parameters
+        ----------
+        spacecraft : str | None, optional
+            Choose one supported spacecraft. If None, coordinates are queried 
+            for all self.spacecraft and stored in self.sc_coords. 
+            The default is None.
+        times : np.ndarray[astropy.time.Time], optional
+            Times for which coordinates are queried. If None, 
+            coordinates are queried for all self.times and stored in 
+            self.sc_coords. The default is None.
+        coordinate_system : sunpy.coordinates.frames.SunPyBaseCoordinateFrame, optional
+            Coordinate frame coordinates are transformed to. 
+            The default is frames.HeliocentricInertial().
+
+        Returns
+        -------
+        coordinates : np.ndarray[astropy.coordinates.SkyCoord]
+            Array of coordinates for chosen spacecraft at given times.*
+            *Returns None if called without keywords.
+
+        """
+        
+        
+        # gets coordinates in a specified coordinate system from SPICE kernels for 
+        # a set of spacecraft for given times. Currently supported spacecraft:
+        # Solar Orbiter, Parker Solar Probe, BepiColombo, STEREO-A and Earth.
+        
         self._set_coordinate_system(coordinate_system)
 
         kernel_keys = {'bepi': 'BEPICOLOMBO MPO', 
@@ -383,17 +428,18 @@ class Coordinates:
                     kernel_keys.get(sc), self.times
                     ).transform_to(self.coordinate_system)
         else:
+            spacecraft = self._parse_sc_names(spacecraft)[0]
             coordinates = astrospice.generate_coords(
                 kernel_keys.get(spacecraft), times
                 ).transform_to(self.coordinate_system)
             return coordinates
         
-        
+
     
-    # calculates instantaneous velocity of object at each time based on list 
-    # of coordinates corresponding to those times
-    # XXX: Deprecated
+    # TODO: Update this function
     def get_instantaneous_velocity(self, coords, cartesian_output=True):
+        # calculates instantaneous velocity of object at each time based on list 
+        # of coordinates corresponding to those times
         
         velocities = []
         if cartesian_output:
@@ -441,3 +487,4 @@ class Coordinates:
     
 # TODO: would be nice to add an add_spice_kernel() function to get coordinates 
 #       from a local spk file (unsupported by astrospice)
+# TODO: astrospice has been archived - use spiceypy routines instead

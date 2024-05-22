@@ -5,15 +5,14 @@ Created on Thu Jan 26 16:23:32 2023
 @author: Zoe.Faes
 """
 
-# TODO: implement function animate(plotter.function) to animate relevant plots produced with heliospacey
+# TODO: implement function animate(plotter.function) to animate relevant figures produced with heliospacey
 
 #################################  IMPORTS  ##################################
 
 import numpy as np
+import math
 import astropy.units as u
 import astropy.time as t
-from simulation import Simulation
-from coordinates import Coordinates
 from sunpy.coordinates import frames
 from sunpy.sun import constants as const
 import astrospice
@@ -24,12 +23,14 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from astropy.visualization import time_support
-#from mpl_toolkits.mplot3d import Axes3D
-#from matplotlib import cm
 from matplotlib.collections import LineCollection
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from matplotlib.animation import FuncAnimation
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+
+from simulation import Simulation
+from coordinates import Coordinates
+from timeseries import Timeseries
 
 #############################  PRIVATE FUNCTIONS  ############################
 
@@ -75,15 +76,124 @@ def _make_logscale(min_val, max_val):
     
     return levels, norm
 
+def _log_scaler(x, min_val=1, max_val=5):
+    x_scaled = np.log(x/min_val) / np.log(max_val/min_val) + 1
+    return x_scaled
+
+def _minmax_scaler(x, x_min, x_max, min_val=1, max_val=5):
+    x_std = (x - x_min) / (x_max - x_min)
+    x_scaled = x_std * (max_val - min_val) + min_val
+    return x_scaled
+
+def _get_line_density(conj, ts, conj_times, sc_cell_times):
+    bin_edges = conj_times[0::4]
+    dens, _ = np.histogram(sc_cell_times, bins=bin_edges)
+    bin_edges.pop(-1)
+    dens_spline = interp1d(bin_edges, dens, bounds_error=False, fill_value='extrapolate')
+    times = np.linspace(conj_times[0], conj_times[-1], 1000)
+    lwidths = dens_spline(times)
+    points = np.array([times, ts(times)]).T.reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    return segments, lwidths
+
+def _parse_sc_names(spacecraft_names: list[str] | str):
+    """
+    Parse specified spacecraft names and store sorted list in 
+    Timeseries.spacecraft.
+
+    Parameters
+    ----------
+    spacecraft_names : list[str] | str
+        Names of chosen spacecraft.
+
+    Returns
+    -------
+    list[str]
+        List of ordered allowed spacecraft names.
+
+    """
+    if type(spacecraft_names) == str:
+        spacecraft_names = spacecraft_names.split(',')
+    
+    allowed_names = {'so': ['so', 'solar orbiter', 'solo'], 
+                     'psp': ['psp', 'parker solar probe'], 
+                     'bepi': ['bepi', 'bepicolombo', 'bepi colombo'], 
+                     'sta': ['sa', 'sta', 'stereo-a', 'stereo a', 'stereoa'], 
+                     'earth': ['earth', 'erde', 'aarde', 'terre', 'terra', 
+                               'tierra', 'blue dot', 'home', 'sol d']}
+    
+    spacecraft = []
+    for name in spacecraft_names:
+        name = name.strip()
+        no_match = True
+        for key, names in allowed_names.items():
+            if name.lower() in names:
+                spacecraft.append(key)
+                no_match = False
+        if no_match:
+            raise Exception('Invalid spacecraft name. Specify choice with '\
+                            'a string containing the name of a spacecraft,'\
+                            ' for example: \'Solar Orbiter\' or \'SolO\'.'\
+                            ' spacecraft other than Solar Orbiter, Parker'\
+                            ' Solar Probe, BepiColombo and STEREO-A are'\
+                            ' not yet supported -- got \'{}\''
+                            .format(name))
+
+    return sorted(spacecraft)
+
 # my_cmap = truncate_colormap(mpl.colormaps['viridis'], minval=0.4, maxval=1.0)
 
 
 #############################  SIMULATION PLOTS  #############################
 
-def plot_ENLIL_slice(sim, variable, time, lat=None, lon=None, radius=None, 
-                     cmap='viridis', logscale=False, rotate=None):
-    
-    data, units = sim.get_data(variable, time)
+def ENLIL_slice(sim: Simulation, 
+                variable: str, 
+                lat: u.Quantity | None = None, 
+                lon: u.Quantity | None = None, 
+                radius: u.Quantity | None = None, 
+                time: str | t.Time | None = None, 
+                cmap: mpl.colors.Colormap | str ='viridis', 
+                logscale: bool = False, 
+                rotate: u.Quantity | None = None):
+    """
+    Plot a slice of an ENLIL simulation.
+
+    Parameters
+    ----------
+    sim : heliospacey.simulation.Simulation
+        Simulation object containing the datacube 
+        corresponding to the chosen variable.
+    variable : str
+        Variable to be plotted. Choose from Simulation.variables
+    lat : astropy.units.Quantity | None, optional
+        Specify for horizontal slices. Latitude at which the slice is taken. 
+        The default is None.
+    lon : astropy.units.Quantity | None, optional
+        Specify for vertical slices. Longitude at which the slice is taken.
+        The default is None.
+    radius : astropy.units.Quantity | None, optional
+        Specify for 'shell' slices. Distance from the Sun at which the slice 
+        is taken. The default is None.
+    time : str | astropy.time.Time | None, optional
+        For time-dependent simulations, time at which slice is to be plotted.
+        Choose from Simulation.times. The default is None.
+    cmap : matplotlib.colors.Colormap | str, optional
+        Colormap used for plot. The default is 'viridis'.
+    logscale : bool, optional
+        Scale values logarithmically. The default is False.
+    rotate : astropy.units.Quantity | None, optional
+        For time-independent simulations, angle by which the datacube should 
+        be rotated to reflect the Sun's rotation. The default is None.
+
+    Returns
+    -------
+    fig : matplotlib.pyplot.Figure
+        Plot of the simulation slice.
+    ax : matplotlib.pyplot.axes
+        Plot axes.
+
+    """
+    data, units, _ = sim.get_data(variable)
 
     if lat != None and lon == None and radius == None and lat >= min(sim.theta) and lat <= max(sim.theta):
         idx = sim._nearest(sim.theta.value, lat.to(u.rad).value)
@@ -101,8 +211,8 @@ def plot_ENLIL_slice(sim, variable, time, lat=None, lon=None, radius=None,
         ax.set_rorigin(0)
         ax.set_rlabel_position(-42.5)
         ax.set_rticks([0.5, 1, 1.5, 2])
-        ax.set_title('ENLIL simulation data for solar wind radial velocity '\
-                     'in the ecliptic plane', fontsize='x-large', pad=20)
+        ax.set_title('ENLIL simulation data for solar wind {} at latitude {:.2f}'.format(variable, lat.to_value(u.deg)), 
+                     fontsize='x-large', pad=20)
         rlabels = ax.get_ymajorticklabels()
         for label in rlabels:
             label.set_fontsize('large')
@@ -145,8 +255,8 @@ def plot_ENLIL_slice(sim, variable, time, lat=None, lon=None, radius=None,
         ax.set_thetamax(90)
         ax.set_rlabel_position(222.5)
         ax.set_rticks([0.5, 1, 1.5, 2])
-        ax.set_title('ENLIL simulation data for solar wind radial velocity '\
-                     'at {} longitude'.format(round(lon.to(u.deg).value)), 
+        ax.set_title('ENLIL simulation data for solar wind {} '\
+                     'at {:.2f} longitude'.format(variable, lon.to_value(u.deg)), 
                      fontsize='x-large', pad=20)
         rlabels = ax.get_ymajorticklabels()
         for label in rlabels:
@@ -176,8 +286,8 @@ def plot_ENLIL_slice(sim, variable, time, lat=None, lon=None, radius=None,
         ax.set_xticks([0, np.pi/2, np.pi, np.pi*3/2, np.pi*2], [0,90,180,270,360])
         ax.set_ylabel('Latitude [deg]')
         ax.set_yticks([-np.pi/3, -np.pi/6, 0, np.pi/6, np.pi/3], [-60,-30,0,30,60])
-        ax.set_title('ENLIL simulation data for solar wind radial velocity '\
-                     'at {} AU'.format(round(radius.to(u.au).value)), 
+        ax.set_title('ENLIL simulation data for solar wind {} '\
+                     'at {:.4f} AU'.format(variable, radius.to(u.au).value), 
                      fontsize='x-large', pad=20)
         ylabels = ax.get_ymajorticklabels()
         for label in ylabels:
@@ -204,7 +314,7 @@ def plot_ENLIL_slice(sim, variable, time, lat=None, lon=None, radius=None,
     return fig, ax
 
 
-def plot_vector_field(sim: Simulation | str, 
+def vector_field(sim: Simulation | str, 
                       vector: str,
                       color_parameter: str = 'magnitude', 
                       cmap: mpl.colors.Colormap | str = 'viridis', 
@@ -219,7 +329,7 @@ def plot_vector_field(sim: Simulation | str,
 
     Parameters
     ----------
-    sim : heliospacey.Simulation object | str
+    sim : heliospacey.simulation.Simulation | str
         The simulation object containing the required vector field information,
         or the path to the simulation file.
     vector : str
@@ -235,14 +345,14 @@ def plot_vector_field(sim: Simulation | str,
     background_var : str | None, optional
         Specify a variable to plot a greyscale contour under the vector field, 
         for example: 'B3', 'V1', 'D' or 'T'. The default is None.
-    flow_paths: list | numpy.array | None, optional
+    flow_paths: list | numpy.ndarray | None, optional
         List or array of 3D spherical coordinates to plot on the vector field.
     time : astropy.time.Time | str | None, optional
         Specify time if simulation is time-dependent. The default is None.
 
     Returns
     -------
-    'matplotlib.pyplot.Figure'
+    fig: matplotlib.pyplot.Figure
 
     """
     
@@ -297,15 +407,15 @@ def plot_vector_field(sim: Simulation | str,
     lat = 90*u.deg
 
     # get vector field
-    data, units = sim.get_data(var_r, time=time)
+    data, units, _ = sim.get_data(var_r, time=time)
     idx = sim._nearest(sim.theta.value, lat.to(u.rad).value)
     vr = data[:,idx]
-    data, units = sim.get_data(var_phi, time=time)
+    data, units, _ = sim.get_data(var_phi, time=time)
     idx = sim._nearest(sim.theta.value, lat.to(u.rad).value)
     vphi = data[:,idx]
     
-    # TODO: check magnitude for magnetic field (should be on the order of 1e-08 Teslas)
-    # TODO: length of arrows for magnetic field should decrease with distance from sun
+    # TODO: check magnitude for magnetic field (~ nT)
+    # TODO: length of arrows for magnetic field (check decrease with distance from sun)
     
     if vector == 'B':
         vr = _symlog(vr)
@@ -328,14 +438,14 @@ def plot_vector_field(sim: Simulation | str,
         color_values = np.arctan2(vr, vphi)
         units = 'dimensionless'
     elif color_parameter[:3].lower() == 'lat':
-        data, units = sim.get_data('V2' if vector=='V' else 'B2', time=time)
+        data, units, _ = sim.get_data('V2' if vector=='V' else 'B2', time=time)
         idx = sim._nearest(sim.theta.value, lat.to(u.rad).value)
         vtheta = data[:,idx]
         color_values = vtheta
     
     # get background data
     if background_var:
-        b_data, b_units = sim.get_data(background_var, time=time)
+        b_data, b_units, _ = sim.get_data(background_var, time=time)
         idx = sim._nearest(sim.theta.value, lat.to(u.rad).value)
         b_slice = b_data[:,idx]
     
@@ -394,21 +504,25 @@ def plot_vector_field(sim: Simulation | str,
     # cbar.set_label(label='{} [{}]'.format(color_parameter, units), 
     #                 fontsize='large', loc='center')
     
+    # if flow_paths:
+    #     # unknown whether one or more flow paths
+    #     try: # try multiple flow paths
+    #         for coords in flow_paths:
+    #             phi = []; r = []
+    #             for coord in coords:
+    #                 phi.append(coord[2].value)
+    #                 r.append(coord[0].value)
+    #             ax.plot(phi, r, color='k', linewidth=1)
+    #     except TypeError: # single flow path
+    #         phi = []; r = []
+    #         for coord in flow_paths:
+    #             phi.append(coord[2].value)
+    #             r.append(coord[0].value)
+    #         ax.plot(phi, r, color='k', linewidth=1)
+            
     if flow_paths:
-        # unknown whether one or more flow paths
-        try: # try multiple flow paths
-            for coords in flow_paths:
-                phi = []; r = []
-                for coord in coords:
-                    phi.append(coord[2].value)
-                    r.append(coord[0].value)
-                ax.plot(phi, r, color='k', linewidth=1)
-        except TypeError: # single flow path
-            phi = []; r = []
-            for coord in flow_paths:
-                phi.append(coord[2].value)
-                r.append(coord[0].value)
-            ax.plot(phi, r, color='k', linewidth=1)
+        for coords in flow_paths:
+            ax.plot(coords[:,2], coords[:,0], color='k', linewidth=1)
         
     if flow_rate_markers:
         viridis = mpl.colormaps.get_cmap('viridis')
@@ -452,7 +566,34 @@ def plot_vector_field(sim: Simulation | str,
     return fig
 
 
-def flow_to_spacecraft(times, sc1, sc2, sim_file_path, cmap='viridis'):
+def flow_to_spacecraft(times: np.ndarray[t.Time | str] | list[t.Time | str], 
+                       sc1: str, 
+                       sc2: str, 
+                       sim_file_path: str, 
+                       cmap: mpl.colors.Colormap | str ='viridis'):
+    """
+    Plot animation of simulated solar wind flow from one spacecraft to another.
+
+    Parameters
+    ----------
+    times : np.ndarray[t.Time | str] | list[t.Time | str]
+        Range of times for which flows should be calculated.
+    sc1 : str
+        Spacecraft from which the flow should be calculated.
+    sc2 : str
+        Second spacecraft to be plotted.
+    sim_file_path : str
+        Path to chosen simulation file.
+    cmap : matplotlib.colors.Colormap | str, optional
+        Colormap used to plot solar wind flow. The default is 'viridis'.
+
+    Returns
+    -------
+    path: str
+        Filepath to animation.
+
+    """
+    
     # instantiate coordinates and simulation
     coords = Coordinates(times, [sc1, sc2])
     sim = Simulation(sim_file_path)
@@ -463,7 +604,7 @@ def flow_to_spacecraft(times, sc1, sc2, sim_file_path, cmap='viridis'):
     flow_splines = {}
     for sc in coords.spacecraft:
         sim.get_cells_from_sc_coords(coords, sc, fixed_dt = dt)
-        # check_sc_sim_consistency(coords, sim, spacecraft=[sc])
+        # sc_sim_consistency(coords, sim, spacecraft=[sc])
         flow_times = []; flow_coordinates = []
         phi_splines = []; r_splines= []; # theta_splines = []
         for time, idx in zip(sim.sc_cell_times[sc], sim.sc_cell_idxs[sc]):
@@ -540,12 +681,40 @@ def flow_to_spacecraft(times, sc1, sc2, sim_file_path, cmap='viridis'):
         
     orbits = FuncAnimation(fig, animate, frames=np.arange(len(coords.times_mjd)), interval=100)
     print('Saving animation to .mp4 file. This may take several minutes.')
-    orbits.save('./figures/Flow path {} to {}.mp4'.format(sc1, sc2),
-                writer = 'ffmpeg', fps = 10)
+    path = './figures/Flow path {} to {}.mp4'.format(sc1, sc2)
+    orbits.save(path, writer = 'ffmpeg', fps = 10)
     print('Save completed.')
     
+    return path
+    
 
-def flow_from_spacecraft(coords, sc, sim_file_path, cmap='plasma'):
+def flow_from_spacecraft(coords: Coordinates, 
+                         sc: str, 
+                         sim_file_path: str, 
+                         cmap: mpl.colors.Colormap | str = 'plasma'):
+    """
+    Plot animation of simulated solar wind flow from a specified spacecraft
+    for the time range inherited from the coords object 
+    (heliospacey.coordinates.Coordinates.times).
+
+    Parameters
+    ----------
+    coords : heliospacey.coordinates.Coordinates
+        Coordinated object for at least one spacecraft.
+    sc : str
+        Spacecraft from which the solar wind flow is to be calculated.
+    sim_file_path : str
+        Path to the simulation file.
+    cmap : matplotlib.colors.Colormap | str, optional
+        Colormap used for the solar wind flow. The default is 'plasma'.
+
+    Returns
+    -------
+    path : str
+        Filepath to animation.
+
+    """
+    
     # instantiate coordinates and simulation
     sim = Simulation(sim_file_path)
     
@@ -553,7 +722,7 @@ def flow_from_spacecraft(coords, sc, sim_file_path, cmap='plasma'):
     
     # find flow paths from spacecraft
     sim.get_cells_from_sc_coords(coords, sc, fixed_dt = dt)
-    # check_sc_sim_consistency(coords, sim, spacecraft=[sc])
+    # sc_sim_consistency(coords, sim, spacecraft=[sc])
     flow_times = []; phi_splines = []; r_splines = []; # theta_splines = []
     # for time, idx in zip(sim.sc_cell_times[sc], sim.sc_cell_idxs[sc]):
     #     coord = [sim.r[idx[0]].value, sim.theta[idx[1]].value, sim.phi[idx[2]].value]
@@ -623,33 +792,51 @@ def flow_from_spacecraft(coords, sc, sim_file_path, cmap='plasma'):
         
     orbits = FuncAnimation(fig, animate, frames=np.arange(len(coords.times_mjd)), interval=80)
     print('Saving animation to .mp4 file. This may take several minutes.')
-    orbits.save('./figures/Flow path from {} from sc coords.mp4'.format(sc),
-                writer = 'ffmpeg', fps = 10)
-    print('Saved to ./figures/Flow path from {}.mp4'.format(sc))
+    path = './figures/Flow path from {}.mp4'.format(sc)
+    orbits.save(path, writer = 'ffmpeg', fps = 10)
+    print('Saved to ', path)
+    
+    return path
             
 #############################  TIMESERIES PLOTS  #############################
 
-def log_scaler(x, min_val=1, max_val=5):
-    x_scaled = np.log(x/min_val) / np.log(max_val/min_val) + 1
-    return x_scaled
+def timeseries(ts: Timeseries, 
+               times: np.ndarray[t.Time] | list[t.Time], 
+               variables: list[str],
+               spacecraft: list[str] | str, 
+               plot_pts: bool = True, 
+               plot_pts_density: bool = False):
+    """
+    Plot timeseries for specified variables at specified times and spacecraft 
+    positions. 
 
-def minmax_scaler(x, x_min, x_max, min_val=1, max_val=5):
-    x_std = (x - x_min) / (x_max - x_min)
-    x_scaled = x_std * (max_val - min_val) + min_val
-    return x_scaled
+    Parameters
+    ----------
+    ts : Timeseries
+        DESCRIPTION.
+    times : np.ndarray[t.Time] | list[t.Time]
+        DESCRIPTION.
+    variables : list[str]
+        DESCRIPTION.
+    spacecraft : list[str] | str
+        DESCRIPTION.
+    plot_pts : bool, optional
+        DESCRIPTION. The default is True.
+    plot_pts_density : bool, optional
+        DESCRIPTION. The default is False.
 
-def get_line_density(conj, ts, conj_times, sc_cell_times):
-    bin_edges = conj_times[0::4]
-    dens, _ = np.histogram(sc_cell_times, bins=bin_edges)
-    bin_edges.pop(-1)
-    dens_spline = interp1d(bin_edges, dens, bounds_error=False, fill_value='extrapolate')
-    times = np.linspace(conj_times[0], conj_times[-1], 1000)
-    lwidths = dens_spline(times)
-    points = np.array([times, ts(times)]).T.reshape(-1, 1, 2)
-    segments = np.concatenate([points[:-1], points[1:]], axis=1)
-    return segments, lwidths
+    Returns
+    -------
+    fig : TYPE
+        DESCRIPTION.
 
-def simple_timeseries(ts, times, variables, units, spacecraft, plot_pts=True, plot_pts_density=False):
+    """
+    
+    spacecraft = _parse_sc_names(spacecraft)
+        
+    # parse variables
+    if isinstance(variables, str):
+        variables = [var.strip() for var in variables.split(',')]
     
     # plotting options
     global sc_params
@@ -657,13 +844,6 @@ def simple_timeseries(ts, times, variables, units, spacecraft, plot_pts=True, pl
                   'psp': ['PSP', 'slategrey'], 'so': ['Solar Orbiter', 'steelblue'], 
                   'sta': ['STEREO-A', 'sandybrown']}
     title = 'Timeseries for {}'.format(', '.join([sc_params.get(sc)[0] for sc in spacecraft]))
-    
-    if isinstance(spacecraft, str):
-        spacecraft = [sc.strip() for sc in spacecraft.split(',')]
-        
-    # parse variables
-    if isinstance(variables, str):
-        variables = [var.strip() for var in variables.split(',')]
     
     # get times & values        
     ts_times = {}
@@ -704,7 +884,7 @@ def simple_timeseries(ts, times, variables, units, spacecraft, plot_pts=True, pl
                 time_labels.append(t.Time(time, format='mjd').iso[:10])
         
     # figure set-up
-    fig = plt.figure(figsize=(17,9), dpi=400)
+    fig = plt.figure(figsize=(16,10), dpi=300)
     ax = []
     
     for i, var in enumerate(variables):
@@ -719,7 +899,7 @@ def simple_timeseries(ts, times, variables, units, spacecraft, plot_pts=True, pl
         ax[i].set_ylim(ymin - tol, ymax + tol)
         ax[i].set_xlim(times[0].mjd, times[-1].mjd) # crop spline edge effects
         ax[i].set_xticks(time_ticks, labels=[])
-        ax[i].set_ylabel('{} [{}]'.format(var, units[i]), 
+        ax[i].set_ylabel('{} [{}]'.format(var, ts.units[var]), 
                       fontsize='large')
         
         # plot timeseries
@@ -758,9 +938,11 @@ def simple_timeseries(ts, times, variables, units, spacecraft, plot_pts=True, pl
     
     return fig
 
-
-def plot_multiple_timeseries(conjunction, timeseries, show_conjunctions=True, 
-                             conjunction_category=['cone', 'parker spiral', 'quadrature', 'opposition']):
+# TODO: update multiple_timeseries
+def multiple_timeseries(conjunction, 
+                        timeseries, 
+                        show_conjunctions=True, 
+                        conjunction_category=['cone', 'parker spiral', 'quadrature', 'opposition']):
                 
     plt.rcParams.update({'text.usetex': True, 'font.family': 'Computer Modern Roman'})
     time_support()
@@ -819,8 +1001,39 @@ def plot_multiple_timeseries(conjunction, timeseries, show_conjunctions=True,
         #plt.savefig('./Figures/time_series_plot')
     return fig
 
-def timeseries_reference(sc, time_interval, var, ts, sim):
-    
+
+
+def timeseries_reference(spacecraft: str, 
+                         var: str, 
+                         time_interval: list[t.Time | str], 
+                         ts: Timeseries, 
+                         sim: Simulation):
+    """
+    Plot an animation of a synthetic timeseries for a chosen spacecraft and 
+    simulated variable alongside the equatorial slice of the simulation, to
+    check for any inconsistencies over a specified time interval.
+
+    Parameters
+    ----------
+    sc : str
+        Spacecraft name. Choose from sim.spacecraft
+    var : str
+        DESCRIPTION.
+    time_interval : list[t.Time | str]
+        [start_time, end_time] over which the animation is to be generated. 
+        This interval must fall within the timeseries times (see ts.data['times']).
+    ts : heliospacey.timeseries.Timeseries
+        Timeseries object containing the data for the chosen spacecraft and 
+        variable.
+    sim : heliospacey.simulation.Simulation
+        Simulation object from which the synthetic timeseries was obtained.
+
+    Returns
+    -------
+    None.
+
+    """
+    sc = _parse_sc_names(spacecraft)[0]
     time_interval = t.Time(time_interval)
     
     # select data subset to plot
@@ -835,7 +1048,7 @@ def timeseries_reference(sc, time_interval, var, ts, sim):
     ts_values = list(data[var].values)
     # get sim data
     sim_values = sim.data[var]
-    units = ts.units[np.where(np.array(ts.variables) == var)[0][0]]
+    units = ts.units[var]
 
     # Plotting options
     sc_index = {'bepi': 0, 'earth': 1, 'psp': 2, 'so': 3, 'sta': 4}
@@ -937,9 +1150,16 @@ def timeseries_reference(sc, time_interval, var, ts, sim):
 ############################  CONJUNCTIONS PLOTS  ############################
 
 # Plot a given conjunction in 2D
-def plot_conjunction2D(coords, Conjunctions, conj, idx=0, plot_simultaneous_conjs=True, plot_all_sc=True, ENLIL=False, sim=None, variable=None, save_fig=True):
+def conjunction_2D(coords, Conjunctions, conj, idx=None, plot_simultaneous_conjs=True, plot_all_sc=True, ENLIL=False, sim=None, variable=None, save_fig=True):
     
-    if not float(idx).is_integer():
+    if idx == None:
+        n = len(conj.times)/2
+        if n - math.floor(n) < 0.5:
+            idx = math.floor(n) - 1
+        else:
+            idx = math.ceil(n) - 1
+        
+    elif not float(idx).is_integer():
         raise Exception('idx must be an integer.')
     idx = int(idx)
     
@@ -971,7 +1191,7 @@ def plot_conjunction2D(coords, Conjunctions, conj, idx=0, plot_simultaneous_conj
             angle = dt*omega.value*u.rad
         else:
             angle = None
-        fig, ax = plot_ENLIL_slice(sim, variable, time=time, 
+        fig, ax = ENLIL_slice(sim, variable, time=time, 
                                    lat=90*u.deg, cmap=my_cmap, rotate=angle)
     else:
         fig = plt.figure(figsize=(8,8), dpi=300)
@@ -1067,10 +1287,8 @@ def plot_conjunction2D(coords, Conjunctions, conj, idx=0, plot_simultaneous_conj
     
 
 # Plot a given conjunction in 3D
-def plot_conjunction3D(self, conj, idx=0, save_fig=True, show_grid=True, show_axes=True, 
+def conjunction_3D(coords, conj, idx=0, save_fig=True, show_grid=True, show_axes=True, 
                        view_elev = 40, view_azim = 0, interactive_fig=False):
-            
-    plt.rcParams.update({'text.usetex': True, 'font.family': 'Computer Modern Roman'}) # use TeX
     
     if not float(idx).is_integer():
         raise Exception('Index must be an integer.')
@@ -1079,26 +1297,26 @@ def plot_conjunction3D(self, conj, idx=0, save_fig=True, show_grid=True, show_ax
     sat_coords = []
     
     # Get coordinates for times
-    sat_coords.append(astrospice.generate_coords('BEPICOLOMBO MPO', self.times))
-    sat_coords.append(astrospice.generate_coords('EARTH', self.times))
-    sat_coords.append(astrospice.generate_coords('SOLAR PROBE PLUS', self.times))
-    sat_coords.append(astrospice.generate_coords('SOLAR ORBITER', self.times))
-    sat_coords.append(astrospice.generate_coords('STEREO AHEAD', self.times))
+    sat_coords.append(astrospice.generate_coords('BEPICOLOMBO MPO', coords.times))
+    sat_coords.append(astrospice.generate_coords('EARTH', coords.times))
+    sat_coords.append(astrospice.generate_coords('SOLAR PROBE PLUS', coords.times))
+    sat_coords.append(astrospice.generate_coords('SOLAR ORBITER', coords.times))
+    sat_coords.append(astrospice.generate_coords('STEREO AHEAD', coords.times))
 
     # Coordinate transform
     for i in range(len(sat_coords)):
-        sat_coords[i] = sat_coords[i].transform_to(self.coordinate_system)
+        sat_coords[i] = sat_coords[i].transform_to(coords.coordinate_system)
     
     # Plotting options
     sc_index = {'bepi': 0, 'earth': 1, 'psp': 2, 'so': 3, 'sta': 4}
     colors = ['indianred', 'darkgreen', 'slategrey', 'steelblue', 'sandybrown', 'slategrey']
     labels = ['BepiColombo', 'Earth', 'PSP', 'Solar Orbiter', 'STEREO-A']
     
-    date = str((conj.start + idx*self.dt).iso)[0:10]
+    date = str((conj.times[0] + idx*np.mean(np.diff(coords.times))).iso)[0:10]
     
     title = 'Conjunctions between %s in %s coordinates' %(
         ', '.join([labels[sc_index.get(sc)] for sc in conj.spacecraft]), 
-        self.coordinate_name)
+        coords.coordinate_name)
     
     # Figure set-up
     if interactive_fig:
@@ -1125,64 +1343,32 @@ def plot_conjunction3D(self, conj, idx=0, save_fig=True, show_grid=True, show_ax
         ax.set_axis_off()
     ax.set_title(title, fontsize='large', multialignment='center', pad = titlepad)
     
-    # Positions of spacecraft in cartesian coordinates
-    if self.coordinate_system == frames.HeliocentricInertial():
-    
-        for i in range(len(conj.spacecraft)):
-            # Plot spacecraft paths
-            xsat, ysat, zsat = self._spherical2cartesian(
-                sat_coords[sc_index.get(conj.spacecraft[i])].distance.au, 
-                np.pi + sat_coords[sc_index.get(conj.spacecraft[i])].lon.rad, 
-                np.pi/2 + sat_coords[sc_index.get(conj.spacecraft[i])].lat.rad)
-            ax.scatter(xsat, ysat, zsat, c=colors[sc_index.get(conj.spacecraft[i])], s=0.2)
-            # Plot conjunctions
-            x, y, z = self._spherical2cartesian(
-                conj.coords[idx][i].distance.au, np.pi + conj.coords[idx][i].lon.rad, 
-                np.pi/2 + conj.coords[idx][i].lat.rad)
-            ax.plot([0, x], [0, y], [0, z], c=colors[sc_index.get(conj.spacecraft[i])], 
-                    label=labels[sc_index.get(conj.spacecraft[i])])
+    verts = [np.array([0,0,0])]
+    for sc in conj.spacecraft:
             
-        # Parameters for shaded area
-        for i in range(0, len(conj.scpairs), 2):
-            coords0 = conj.coords[idx][np.where(conj.spacecraft == conj.scpairs[i])[0][0]]
-            coords1 = conj.coords[idx][np.where(conj.spacecraft == conj.scpairs[i+1])[0][0]]
-            x0, y0, z0 = self._spherical2cartesian(
-                coords0.distance.au, np.pi + coords0.lon.rad, np.pi/2 + coords0.lat.rad)
-            x1, y1, z1 = self._spherical2cartesian(
-                coords1.distance.au, np.pi + coords1.lon.rad, np.pi/2 + coords1.lat.rad)
-            verts = [np.array([0,0,0]), np.array([x0,y0,z0]), np.array([x1,y1,z1])]
-            ax.add_collection3d(Poly3DCollection([verts], facecolor = colors[5], alpha = 0.2))
-    
-    # Plot!
-    if self.coordinate_system == frames.HeliographicCarrington(observer = 'earth'):
+        # Plot spacecraft paths
+        xsat, ysat, zsat = _spherical2cartesian(
+            sat_coords[sc_index[sc]].distance.au, 
+            np.pi + sat_coords[sc_index[sc]].lon.rad, 
+            np.pi/2 + sat_coords[sc_index[sc]].lat.rad)
+        ax.scatter(xsat, ysat, zsat, c=colors[sc_index[sc]], s=0.2)
         
-        for i in range(len(conj.spacecraft)):
-            # Plot spacecraft paths
-            xsat, ysat, zsat = self._spherical2cartesian(
-                sat_coords[sc_index.get(conj.spacecraft[i])].radius.au, 
-                np.pi + sat_coords[sc_index.get(conj.spacecraft[i])].lon.rad, 
-                np.pi/2 + sat_coords[sc_index.get(conj.spacecraft[i])].lat.rad)
-            ax.scatter(xsat, ysat, zsat, c=colors[sc_index.get(conj.spacecraft[i])], s=0.2)
-            # Plot conjunctions
-            x, y, z = self._spherical2cartesian(
-                conj.coords[idx][i].radius.au, np.pi + conj.coords[idx][i].lon.rad, 
-                np.pi/2 + conj.coords[idx][i].lat.rad)
-            ax.plot([0, x], [0, y], [0, z], c=colors[sc_index.get(conj.spacecraft[i])], 
-                    label=labels[sc_index.get(conj.spacecraft[i])])
-            
+        # Plot conjunctions
+        x, y, z = _spherical2cartesian(conj.sc_coords.get(sc)[idx].distance.au, 
+                                       np.pi + conj.sc_coords.get(sc)[idx].lon.rad, 
+                                       np.pi/2 + conj.sc_coords.get(sc)[idx].lat.rad)
+        ax.plot([0, x], [0, y], [0, z], c=colors[sc_index[sc]], label=labels[sc_index[sc]])
+        
         # Parameters for shaded area
-        for i in range(0, len(conj.scpairs), 2):
-            coords0 = conj.coords[idx][np.where(conj.spacecraft == conj.scpairs[i])[0][0]]
-            coords1 = conj.coords[idx][np.where(conj.spacecraft == conj.scpairs[i+1])[0][0]]
-            x0, y0, z0 = self._spherical2cartesian(
-                coords0.radius.au, np.pi + coords0.lon.rad, np.pi/2 + coords0.lat.rad)
-            x1, y1, z1 = self._spherical2cartesian(
-                coords1.radius.au, np.pi + coords1.lon.rad, np.pi/2 + coords1.lat.rad)
-            verts = [np.array([0,0,0]), np.array([x0,y0,z0]), np.array([x1,y1,z1])]
-            ax.add_collection3d(Poly3DCollection([verts], facecolor = colors[5], alpha = 0.2))
-           
+        x, y, z = _spherical2cartesian(conj.sc_coords.get(sc)[idx].distance.au, 
+                                          np.pi + conj.sc_coords.get(sc)[idx].lon.rad, 
+                                          np.pi/2 + conj.sc_coords.get(sc)[idx].lat.rad)
+        verts.append(np.array([x, y, z]))
+    
+    ax.add_collection3d(Poly3DCollection([verts], facecolor = colors[5], alpha = 0.2))
+
     ax.legend(loc='best', markerscale=2, labelspacing=0.8, edgecolor='white', framealpha=1)
-    ax.text(-1,-1.4,0.55, 'Date: %s' %(str((conj.start + idx*self.dt).iso)[0:10]), fontsize='large') 
+    ax.text(-1,-1.4,0.55, 'Date: {}'.format(date), fontsize='large') 
     #(1,1.4,0.5) for azim=180
     ax.view_init(elev=view_elev, azim=view_azim)
     
@@ -1191,24 +1377,24 @@ def plot_conjunction3D(self, conj, idx=0, save_fig=True, show_grid=True, show_ax
 
 ##########################  CONJUNCTIONS ANIMATIONS  #########################
 
-
-def animate_conjunctions2D(self, ENLIL=False, variable=None, sim_file_paths=None):
+# TODO: update function
+def conjunctions_animation_2D(coords, ENLIL=False, variable=None, sim_file_paths=None):
     
     # TODO: disable artifical sun rotation when using time-varying cdf files
     
     # Get coordinates for times
-    so_coords = astrospice.generate_coords('SOLAR ORBITER', self.times)
-    psp_coords = astrospice.generate_coords('SOLAR PROBE PLUS', self.times)
-    sta_coords = astrospice.generate_coords('STEREO AHEAD', self.times)
-    bepi_coords = astrospice.generate_coords('BEPICOLOMBO MPO', self.times)
-    earth_coords = astrospice.generate_coords('EARTH', self.times)
+    so_coords = astrospice.generate_coords('SOLAR ORBITER', coords.times)
+    psp_coords = astrospice.generate_coords('SOLAR PROBE PLUS', coords.times)
+    sta_coords = astrospice.generate_coords('STEREO AHEAD', coords.times)
+    bepi_coords = astrospice.generate_coords('BEPICOLOMBO MPO', coords.times)
+    earth_coords = astrospice.generate_coords('EARTH', coords.times)
 
     # Coordinate transform
-    so_coords = so_coords.transform_to(self.coordinate_system)
-    psp_coords = psp_coords.transform_to(self.coordinate_system)
-    sta_coords = sta_coords.transform_to(self.coordinate_system)
-    bepi_coords = bepi_coords.transform_to(self.coordinate_system)
-    earth_coords = earth_coords.transform_to(self.coordinate_system)
+    so_coords = so_coords.transform_to(coords.coordinate_system)
+    psp_coords = psp_coords.transform_to(coords.coordinate_system)
+    sta_coords = sta_coords.transform_to(coords.coordinate_system)
+    bepi_coords = bepi_coords.transform_to(coords.coordinate_system)
+    earth_coords = earth_coords.transform_to(coords.coordinate_system)
     
     # Plotting options
     plt.rcParams.update({'text.usetex': True, 'font.family': 'Computer Modern Roman'}) # use TeX
@@ -1216,7 +1402,7 @@ def animate_conjunctions2D(self, ENLIL=False, variable=None, sim_file_paths=None
     colors = ['indianred', 'darkgreen', 'slategrey', 'steelblue', 'sandybrown', 'slategrey']
     labels = ['BepiColombo', 'Earth', 'PSP', 'Solar Orbiter', 'Stereo-A']
     title = 'Conjunctions between SolO, PSP, BepiColombo, Stereo-A and Earth'\
-        ' in %s coordinates' %(self.coordinate_name)
+        ' in %s coordinates' %(coords.coordinate_name)
     
     if ENLIL:
         cmap = plt.get_cmap('binary')
@@ -1411,8 +1597,8 @@ def animate_conjunctions2D(self, ENLIL=False, variable=None, sim_file_paths=None
     #link = orbits.to_html5_video()
     #print(link)
     
-
-def animate_conjunctions3D(self):
+# TODO: update function
+def conjunctions_animation_3D(self):
     
     sat_coords = []
     
@@ -1571,12 +1757,17 @@ def animate_conjunctions3D(self):
     
 ################################  OTHER PLOTS  ###############################
     
-def plot_spacecraft_position(coords, spacecraft, time):
+def spacecraft_position(coords: Coordinates, 
+                        spacecraft: str, 
+                        time: t.Time, 
+                        print_coordinates: bool = False):
     
     # Plotting options
     sc_index = {'bepi': 0, 'earth': 1, 'psp': 2, 'so': 3, 'sta': 4}
     colors = ['indianred', 'darkgreen', 'slategrey', 'steelblue', 'sandybrown', 'slategrey']
     labels = ['BepiColombo', 'Earth', 'PSP', 'Solar Orbiter', 'STEREO-A']
+    
+    spacecraft = _parse_sc_names(spacecraft)
     
     title = 'Position of {} in {} coordinates'.format(
         ', '.join([labels[sc_index.get(sc)] for sc in spacecraft]), 
@@ -1585,20 +1776,23 @@ def plot_spacecraft_position(coords, spacecraft, time):
     ax = fig.add_subplot(projection='polar')
 
     ax.set_ylim(0,1.1)
-    #ax.set_rticks([0.25, 0.5, 0.75, 1])
+    ax.set_rticks([0.25, 0.5, 0.75, 1])
     ax.set_rlabel_position(-42.5)
     ax.set_title(title, fontsize='x-large', multialignment='center', pad=20)
     
     for sc in spacecraft:
         time_idx = coords._nearest([time.mjd for time in coords.times], t.Time(time).mjd)
-        ax.scatter(coords.sc_coords[sc][time_idx].lon.rad, coords.sc_coords[sc][time_idx].distance.au, 
+        coordinates = coords.sc_coords[sc][time_idx]
+        ax.scatter(coordinates.lon.rad, coordinates.distance.au, 
                    c=colors[sc_index.get(sc)], label=labels[sc_index.get(sc)], s=10)
+        if print_coordinates:
+            print("{} position (lon, lat, r): {}, {}, {}".format(labels[sc_index[sc]], coordinates.lon.to(u.deg), coordinates.lat.to(u.deg), coordinates.distance.to(u.au)))
     ax.legend(loc='lower left', bbox_to_anchor=(-0.15,-0.15), markerscale=1, 
               labelspacing=0.8, frameon=False, fontsize='large')
     ax.text(5.25, 1.4, 'Date: {}'.format(str(t.Time(time).iso)[0:10]), fontsize='large')
         
 
-def check_sc_sim_consistency(coords, sim, spacecraft=None):
+def sc_sim_consistency(coords, sim, spacecraft=None):
     
     # TODO: phi coordinate behavior 0-->2pi gives erroneous sim coordinates
     
@@ -1675,7 +1869,7 @@ def check_sc_sim_consistency(coords, sim, spacecraft=None):
         
 
 # TODO: work in progress
-def get_timeseries_information_density(conj, sim):
+def timeseries_information_density(conj, sim):
     
     omega = 2*np.pi*u.rad/(25.38*u.day)
     for sc in conj.spacecraft:
@@ -1704,7 +1898,7 @@ def get_timeseries_information_density(conj, sim):
         plt.title('Histogram of information density for {}'.format(sc))
         plt.show()
         
-def plot_sim_data_density(conj, sim):
+def sim_data_density(conj, sim):
     # no. of data points per day
     
     omega = 2*np.pi*u.rad/(25.38*u.day)

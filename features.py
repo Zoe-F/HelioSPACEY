@@ -65,6 +65,73 @@ file_paths = ['./Timeseries/{}.pickle'.format(name) for name in file_names]
 
 label_labelling = {'non_conj': 0, 'cone': 1, 'quadrature': 2, 'opposition': 3, 'parker spiral': 4}
 
+
+def find_lag(times, ts_x, ts_y, conj, plot_cc=False, plot_lag=False):
+    
+    npts = len(times)
+    
+    warnings.filterwarnings("error")
+    
+    lags = []
+    for x, y in zip(ts_x, ts_y):
+        pccx = []
+        pccy = []
+        for j in range(npts-round(npts/10)): # prevent divide by zero due to std. dev. computation from diag(cov) of numpy's corrcoef Spearman function due to duplicates
+            try:
+                pccx.append(x.corr(y.shift(j), method='spearman'))
+                pccy.append(y.corr(x.shift(j), method='spearman'))
+            except RuntimeWarning:
+                print(j, npts, x.name, y.name)
+                # pass
+        lag = []
+        best_direction = []
+        for pcc in [pccx, pccy]:
+            # peaks = find_peaks(pcc, height=0)
+            # try:
+            #     best = np.array([(npts - peaks[0][p])*peaks[1].get('peak_heights')[p] for p in range(len(peaks[0]))])
+            #     lag.append(peaks[0][best.argmax()])
+            #     best_direction.append(best.argmax())
+            # except ValueError:
+            lag.append(np.array(pcc).argmax())
+            best_direction.append(1/(1+np.array(pcc).argmax()))
+            peaks = False
+        pcc = [pccx, pccy][np.array(best_direction).argmax()]
+        lags.append(lag[np.array(best_direction).argmax()])
+        
+        if plot_cc:
+            plt.figure()
+            plt.plot(range(npts-round(npts/10)), pcc)
+            plt.scatter(lags[-1], max(pcc), marker='x', color='orange')
+            plt.title("Cross-correlation for {}".format(x.name))
+            
+        if plot_lag:
+            sc_params = {'bepi': ['BepiColombo', 'indianred'], 'earth': ['Earth', 'darkgreen'], 
+                          'psp': ['PSP', 'slategrey'], 'so': ['Solar Orbiter', 'steelblue'], 
+                          'sta': ['STEREO-A', 'sandybrown']}
+            xp = [x, y][np.array(best_direction).argmax()]
+            yp = [x, y][np.array(best_direction).argmin()]
+            plt.figure()
+            plt.plot(range(npts), xp.values, color='b')
+            shifted_series = yp.shift(lags[-1])
+            plt.plot(range(npts), shifted_series.values, color='r') 
+            
+            title = '{} in a {} conjunction - var: {} - lag: {} hrs'.format(
+                ' and '.join([sc_params.get(sc)[0] for sc in conj.spacecraft]), 
+                conj.label[0], x.name[:-2], round((t.Time(times[lags[-1]]) - t.Time(times[0])).to_value('hr')))
+        
+            plt.title(title)
+    warnings.resetwarnings() 
+        
+    lag = round(np.mean(lags))
+    lag_time = t.Time(times[lag]) - t.Time(times[0])
+    
+    if lag_time > 500*u.hr:
+        print('lag is greater than 500 hours.')
+            
+    return lag, lag_time
+
+
+
 def find_lag2(conj, plot=True, check_plot=False):
     
     try:
@@ -159,71 +226,179 @@ def find_lag_og(times, ts_x, ts_y, plot_cc=False, plot_lag=False):
     return lag, lag_time
 
 
-def find_lag(times, ts_x, ts_y, conj, plot_cc=False, plot_lag=False):
-    
-    npts = len(times)
-    
-    warnings.filterwarnings("error")
+
+# moved from timeseries
+def get_lag(ts, resamp_factor=2, check_lag_plots=False):
     
     lags = []
-    for x, y in zip(ts_x, ts_y):
-        pccx = []
-        pccy = []
-        for j in range(npts-round(npts/10)): # prevent divide by zero due to std. dev. computation from diag(cov) of numpy's corrcoef Spearman function due to duplicates
-            try:
-                pccx.append(x.corr(y.shift(j), method='spearman'))
-                pccy.append(y.corr(x.shift(j), method='spearman'))
-            except RuntimeWarning:
-                print(j, npts, x.name, y.name)
-                # pass
-        lag = []
-        best_direction = []
-        for pcc in [pccx, pccy]:
-            # peaks = find_peaks(pcc, height=0)
-            # try:
-            #     best = np.array([(npts - peaks[0][p])*peaks[1].get('peak_heights')[p] for p in range(len(peaks[0]))])
-            #     lag.append(peaks[0][best.argmax()])
-            #     best_direction.append(best.argmax())
-            # except ValueError:
-            lag.append(np.array(pcc).argmax())
-            best_direction.append(1/(1+np.array(pcc).argmax()))
-            peaks = False
-        pcc = [pccx, pccy][np.array(best_direction).argmax()]
-        lags.append(lag[np.array(best_direction).argmax()])
-        
-        if plot_cc:
-            plt.figure()
-            plt.plot(range(npts-round(npts/10)), pcc)
-            plt.scatter(lags[-1], max(pcc), marker='x', color='orange')
-            plt.title("Cross-correlation for {}".format(x.name))
-            
-        if plot_lag:
-            sc_params = {'bepi': ['BepiColombo', 'indianred'], 'earth': ['Earth', 'darkgreen'], 
-                          'psp': ['PSP', 'slategrey'], 'so': ['Solar Orbiter', 'steelblue'], 
-                          'sta': ['STEREO-A', 'sandybrown']}
-            xp = [x, y][np.array(best_direction).argmax()]
-            yp = [x, y][np.array(best_direction).argmin()]
-            plt.figure()
-            plt.plot(range(npts), xp.values, color='b')
-            shifted_series = yp.shift(lags[-1])
-            plt.plot(range(npts), shifted_series.values, color='r') 
-            
-            title = '{} in a {} conjunction - var: {} - lag: {} hrs'.format(
-                ' and '.join([sc_params.get(sc)[0] for sc in conj.spacecraft]), 
-                conj.label[0], x.name[:-2], round((t.Time(times[lags[-1]]) - t.Time(times[0])).to_value('hr')))
-        
-            plt.title(title)
-    warnings.resetwarnings() 
-        
-    lag = round(np.mean(lags))
-    lag_time = t.Time(times[lag]) - t.Time(times[0])
+    pcoefs = []
+    ignore_duplicates = []
     
-    if lag_time > 500*u.hr:
-        print('lag is greater than 500 hours.')
-            
-    return lag, lag_time
+    for i in range(len(ts.data)):
+        for j in range(len(ts.data)):
+            if not (i == j) and not (j in ignore_duplicates):
+                x = []
+                for time in ts.times:
+                    x.append(time.jd)
+                spline1 = CubicSpline(x, ts.data[i])
+                spline2 = CubicSpline(x, ts.data[j])
+                # double sample points in timeseries for lag identification
+                xs = np.arange(
+                    x[0], 2*x[-1]-x[-2], (x[-1]-x[0])/(resamp_factor*len(x))
+                    )
+                c = np.correlate(spline1(xs)-np.mean(ts.data[i]), 
+                                 spline2(xs)-np.mean(ts.data[j]), 
+                                 'full')
 
+                if len(c)%2 == 0:
+                    lag = np.argmax(c)-len(c)/2
+                else:
+                    lag = np.argmax(c)-(len(c)+1)/2
+                if lag < 0:
+                    synced_data1 = spline1(xs[:int(lag)])
+                    synced_data2 = spline2(xs[int(-lag):])
+                elif lag == 0:
+                    synced_data1 = spline1(xs)
+                    synced_data2 = spline2(xs)
+                else:
+                    synced_data1 = spline1(xs[int(lag):])
+                    synced_data2 = spline2(xs[:int(-lag)])
+                    
+                if check_lag_plots:
+                    
+                    plt.rcParams.update({'text.usetex': True, 
+                                         'font.family': 'Computer Modern Roman'})
+                    
+                    # Plotting options
+                    sc_index = {'bepi': 0, 'earth': 1, 'psp': 2, 'so': 3, 'sta': 4}
+                    colors = ['indianred', 'darkgreen', 'slategrey', 
+                              'steelblue', 'sandybrown', 'slategrey']
+                    labels = ['BepiColombo', 'Earth', 'PSP', 
+                              'Solar Orbiter', 'STEREO-A']
+                    
+                    # FIG 1: cross-correlation plot - max gives lag value
+                    title = ('Cross-correlation of timeseries for {} and {}'
+                             .format(labels[sc_index.get(ts.spacecraft[i])],
+                                     labels[sc_index.get(ts.spacecraft[j])]))
+                    
+                    fig1 = plt.figure(figsize=(8,8), dpi=300)
+                    ax = fig1.add_subplot()
+                    xc = np.linspace(-len(c)/2, len(c)/2, len(c))
+                    ax.plot(xc, c)
+                    ax.set_title(title, pad=10, fontsize = 'x-large')
+                    
+                    # FIG 2: synchronised timeseries - features should overlap
+                    title = 'Synchronized timeseries at {}'.format(
+                        ', '.join([labels[sc_index.get(sc)] for sc in ts.spacecraft])
+                        )
+                    
+                    fig2 = plt.figure(figsize=(8,8), dpi=300)
+                    ax = fig2.add_subplot()
+                    ax.set_ylabel('{} [{}]'.format(ts.variable, ts.units), 
+                                  fontsize='large')
+                    
+                    xs_step_in_hours = t.TimeDelta(xs[1]-xs[0], format='jd').to_value('hr')
+                    xs1 = np.arange(0, len(xs))
+                    xs2 = xs1.copy() + lag
+                    ax.plot(xs1*xs_step_in_hours, spline1(xs), 
+                            color=colors[sc_index.get(ts.spacecraft[0])], 
+                            label=labels[sc_index.get(ts.spacecraft[0])])
+                    ax.plot(xs2*xs_step_in_hours, spline2(xs), 
+                            color=colors[sc_index.get(ts.spacecraft[1])], 
+                            label=labels[sc_index.get(ts.spacecraft[1])])
+                    
+                    ax.set_title(title, pad=45, fontsize = 'x-large')
+                    ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.1), 
+                              ncol=len(ts.spacecraft), frameon=False, fontsize='large')
+                    ax.set_xlabel(r'$\mathrm{Duration \: [hours]}$', 
+                                  fontsize='x-large', labelpad=10)
+
+                lags.append(lag*ts.dt.to_value('hr'))
+                pcoefs.append(np.corrcoef(synced_data1, synced_data2))
+        ignore_duplicates.append(i)
+
+    return lags, pcoefs
+
+# moved from timeseries
+def get_expected_lag(ts, conj, sim, coord, check_expected_plot=True):
     
+    sim._get_times(mjd=True)
+    
+    lag = []
+    for idx in range(len(conj.times)-1):
+        
+        V1, units, _ = sim.get_data('V1', conj.times[idx])
+        V2, units, _ = sim.get_data('V2', conj.times[idx])
+        V3, units, _ = sim.get_data('V3', conj.times[idx])
+        
+        r = []; theta = []; phi = []; sw_vel = []
+        
+        for i, coord in enumerate(conj.coords[idx]): 
+            
+            r.append(coord.distance.au)
+            theta.append(coord.lat.rad)
+            phi.append(coord.lon.rad)
+            
+            if sim.is_stationary:
+                omega = (2*np.pi/25.38*u.rad/u.day).to(u.rad/u.hour)
+                dt = t.TimeDelta(conj.times[idx] - sim.times[0]).to_value('hr')
+                dlon = dt*omega.value
+                phi_idx = sim._nearest(sim.phi.value + dlon, phi[i])
+            else:
+                phi_idx = sim._nearest(sim.phi.value, phi[i])
+            theta_idx = sim._nearest(sim.theta.value, theta[i])
+            r_idx = sim._nearest(sim.r.value, r[i])
+            
+            sw_vel.append(
+                [(V1[phi_idx, theta_idx, r_idx]*units).to_value(u.au/u.hr), 
+                 (V2[phi_idx, theta_idx, r_idx]*units).to_value(u.au/u.hr), 
+                 (V3[phi_idx, theta_idx, r_idx]*units).to_value(u.au/u.hr)]
+                )
+            
+        x = [r[1]-r[0], theta[1]-theta[0], phi[1]-phi[0]]
+        X = np.sqrt(r[0]**2 + r[1]**2 - 2 * r[0] * r[1] * (
+            np.sin(theta[0]) * np.sin(theta[1]) * np.cos(phi[0]-phi[1]) + 
+            np.cos(theta[0]) * np.cos(theta[1])
+            ))
+        v = sw_vel[0] if r[0] <= r[1] else sw_vel[1]
+        x_unit = x/np.sqrt(x[0]**2 + x[1]**2 + x[2]**2)
+        Vx = v[0] * x_unit[0] * (
+            np.sin(v[1]) * np.sin(x_unit[1]) * np.cos(v[2]-x_unit[2]) + 
+            np.cos(v[1]) * np.cos(x_unit[1])
+            )
+        lag.append(X/Vx)
+    lag.append(X/Vx)
+
+    meanlag = np.mean(lag)
+    minlag = min(lag)
+    maxlag = max(lag)
+    
+    if check_expected_plot:
+        
+        title = 'Expected lag from solar wind speed and distance between spacecraft'
+        
+        fig3 = plt.figure(figsize=(8,8), dpi=300)
+        ax = fig3.add_subplot()
+        
+        duration = range(len(conj.times))*conj.dt.to_value('hr')
+        ax.plot(duration, lag, color = 'steelblue')
+        ax.fill_between(duration, y1 = np.percentile(lag, 10), 
+                        y2 = np.percentile(lag, 90), 
+                        color = 'lightsteelblue', alpha=0.5)
+        ax.plot(duration, [meanlag]*len(conj.times), 
+                linestyle = '--', color='slategrey')
+        
+        ax.set_xlabel('Conjunction duration [hrs]', 
+                      fontsize='x-large', labelpad=10)
+        ax.set_ylabel('Expected lag [hrs]', fontsize='large')
+        ax.set_title(title, pad=10, fontsize = 'x-large')
+        ax.set_xlim([duration[0], duration[-1]])
+        
+    return meanlag, minlag, maxlag
+
+
+
+
 def get_pearson_correlation(ts_x, ts_y, lag=0):
     
     pcc = []

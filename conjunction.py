@@ -46,7 +46,6 @@ class Conjunction:
         self.isparker = [False]
         self.parkerpairs = []
         self.swspeed = []
-        self.timeseries = {spacecraft[0]: {}, spacecraft[1]: {}}
         self.ts_units = {}
         
     def __repr__(self):
@@ -71,10 +70,9 @@ class Conjunctions:
     #############################  CONSTRUCTORS  #############################
     def __init__(self, times, spacecraft, sc_coords, sc_cell_idxs = None, sc_cell_times = None):
         
-        print('Initialising Conjunctions...')
+        # print('Initialising Conjunctions...')
         
         self.allconjs = []
-        self.nallconjs = int
         
         self.cones = []
         self.quads = []
@@ -91,16 +89,16 @@ class Conjunctions:
         self.sc_cell_idxs = sc_cell_idxs
         self.sc_cell_times = sc_cell_times
         
-        print('Initialisation complete.')
+        # print('Initialisation complete.')
         
     def __repr__(self):
         return ('There are {} conjunctions between {} from {} to {}'
-                .format(self.nallconjs, ', '.join(self.spacecraft),
+                .format(len(self.allconjs), ', '.join(self.spacecraft),
                         self.times[0], self.times[-1]))
     
     def __str__(self):
         return ('There are {} conjunctions between {} from {} to {}'
-                .format(self.nallconjs, ', '.join(self.spacecraft),
+                .format(len(self.allconjs), ', '.join(self.spacecraft),
                         self.times[0], self.times[-1]))
         
     ##########################  PRIVATE FUNCTIONS  ###########################
@@ -219,7 +217,7 @@ class Conjunctions:
         for coord in zip(*self.sc_coords.values()): 
             if sim:
                 # get speeds for closest simulation time
-                data, units = sim.get_data('V1', coord[0].obstime)
+                data, units, _ = sim.get_data('V1', coord[0].obstime)
             swspeed = []
             for c in coord:
                 if sim:
@@ -487,19 +485,15 @@ class Conjunctions:
         
         self._get_conjunctions(sim)
         
-        print('Merging consecutive conjunctions...')
-        
+        # Merge consecutive conjunctions
         self.cones = self._merge_consecutive_conjunctions(self.cones) if self.cones else []
         self.quads = self._merge_consecutive_conjunctions(self.quads) if self.quads else []
         self.opps = self._merge_consecutive_conjunctions(self.opps) if self.opps else []
         self.parkers = self._merge_consecutive_conjunctions(self.parkers) if self.parkers else []
         self.non_conjs = self._merge_consecutive_conjunctions(self.non_conjs) if self.non_conjs else []
         
-        print('Consecutive conjunctions merged.')
-        
-        print('Translating to sim coordinates...')
-        
         if sim:
+            # translate coordinates to simulation space
             for conjs in [self.cones, self.quads, self.opps, self.parkers, self.non_conjs]:
                 for conj in conjs:
                     for sc in conj.spacecraft:
@@ -509,7 +503,7 @@ class Conjunctions:
                         conj.sc_cell_times[sc] = self.sc_cell_times[sc][start_idx:end_idx]
                         conj.sc_cell_idxs[sc] = self.sc_cell_idxs[sc][start_idx:end_idx]
         
-        self.allconjs = [c for conj in [self.cones, self.quads, self.opps, self.parkers, self.non_conjs] for c in conj]
+        self.allconjs = [c for conj in [self.cones, self.quads, self.opps, self.parkers] for c in conj]
         #self.nallconjs = sum([len(conjs) for cat in self.allconjs for conjs in cat])
         
         #print('Identifying multiple spacecraft conjunctions...')
@@ -518,15 +512,21 @@ class Conjunctions:
         
         #print('Multiple spacecraft conjunctions identified.')
         
-        print('Conjunctions search complete.')
+        print('Conjunctions search complete. \n')
 
 
     # finds conjunctions according to specified parameters
-    def find_conjunctions(self, label=None, spacecraft_names=None, time=None,
-                          start_time=None, end_time=None, length=None, verbose=True):
+    def find_conjunctions(self, 
+                          conj_type=None, 
+                          spacecraft_names=None, 
+                          time=None,
+                          start_time=None, 
+                          end_time=None, 
+                          length=None, 
+                          verbose=True):
         
         out = []
-        label_out = []
+        conj_type_out = []
         time_out = []
         start_out = []
         end_out = []
@@ -582,21 +582,21 @@ class Conjunctions:
                         spacecraft_out.append(conj)
             out.append(set(spacecraft_out))
 
-        if label:
+        if conj_type:
             # handle string input
-            if type(label) == str:
-                label = label.split(',')
-                label = [lab.strip() for lab in label]
+            if type(conj_type) == str:
+                conj_type = conj_type.split(',')
+                conj_type = [lab.strip() for lab in conj_type]
             # if label is non_conj, change set of conjunctions to be searched
-            if any(label) in [['non_conj'], ['non_conjs'], ['non conj'], ['non conjs'], ['None']]:
+            if any(conj_type) in [['non_conj'], ['non_conjs'], ['non conj'], ['non conjs'], ['None']]:
                 conjunctions = self.non_conjs
-                label = [None]
+                conj_type = [None]
             for conj in conjunctions:
                 for i in range(len(conj.label)):
-                    for j in range(len(label)):
-                        if conj.label[i] == label[j]: # find matching labels
-                            label_out.append(conj)
-            out.append(label_out)
+                    for j in range(len(conj_type)):
+                        if conj.label[i] == conj_type[j]: # find matching labels
+                            conj_type_out.append(conj)
+            out.append(conj_type_out)
         if time:
             for conj in conjunctions:
                 # determine if time falls between conjunction start and end

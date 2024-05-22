@@ -144,7 +144,8 @@ class Simulation:
         z = r * np.cos(phi)
         return x, y, z
     
-    # interpolation method 1 - UNTESTED
+    # interpolation method 1 - DOES NOT WORK
+    # TODO: Fix! Curvilinear coordinate headache...
     def _interpolate(self, r, theta, phi, data, resamp_factor=2):
         rs = np.linspace(min(r), max(r), resamp_factor*len(r))
         thetas = np.linspace(min(theta), max(theta), resamp_factor*len(theta))
@@ -154,6 +155,7 @@ class Simulation:
         x, y, z = self._spherical2cartesian(r, theta, phi)
         interp = LinearNDInterpolator(list(zip(x, y, z)), data)
         interp_data = interp(X, Y, Z)
+        
         return interp_data
     
     # interpolation method 2 - UNTESTED
@@ -227,12 +229,12 @@ class Simulation:
                 self.times_mjd.append(time.mjd)
                 
     def _get_coordinates(self):
-        # ---- physics convention used here: (r, theta, phi) 
+        # physics convention used here: (r, theta, phi) 
         # ie. theta = lat and phi = lon
         
         if self.file_format == 'cdf':
             file = cdf.CDF(self.file_paths[0])
-            # get r, theta, phi coordinates data are defined on
+            # r, theta, phi coordinates data are defined on
             self.r = (file.varget(variable='r')[0] << u.m).to(u.au)
             self.theta = file.varget(variable='theta')[0] << u.rad
             self.phi = file.varget(variable='phi')[0] << u.rad
@@ -331,28 +333,33 @@ class Simulation:
         # inner boundary of the simulation space (0.14 AU)
         if psp:           
             perihelion_mask = [r_spline(time) <= 0.14 for time in times_mjd]
-            # find all dphi/dt outside of perihelion intervals
+            # get all dr, dtheta, dphi, dt outside of perihelion intervals
             dr = np.diff(np.ma.masked_array(r_spline(times_mjd), mask=perihelion_mask))
             dtheta = np.diff(np.ma.masked_array(theta_spline(times_mjd), mask=perihelion_mask))
             dphi = np.diff(np.ma.masked_array(phi_spline(times_mjd), mask=perihelion_mask))
             dt = np.diff(np.ma.masked_array(times_mjd, mask=perihelion_mask))
-        
+            
+            # find timestep from max velocity
+            r_dt = np.diff(self.r.value).mean()/(abs(dr)/dt).compressed().max() # ignore masked values
+            theta_dt = np.diff(self.theta.value).mean()/(abs(dtheta)/dt).compressed().max()
+            phi_dt = np.diff(self.phi.value).mean()/(abs(dphi)/dt).compressed().max()
+            
+            # print(np.diff(self.r.value).mean(), np.diff(self.theta.value).mean(), np.diff(self.phi.value).mean())
+            # print(abs(dr)/dt, abs(dtheta)/dt, abs(dphi)/dt)
+            
         else:
+            # get all dr, dtheta, dphi, dt
             dr = np.diff(r_spline(times_mjd))
             dtheta = np.diff(theta_spline(times_mjd))
             dphi = np.diff(phi_spline(times_mjd))
             dt = np.diff(times_mjd)
         
-        dr_dt = abs(dr)/dt
-        dtheta_dt = abs(dtheta)/dt
-        dphi_dt = abs(dphi)/dt
+            # find timestep from max velocity
+            r_dt = np.diff(self.r.value).mean()/max(abs(dr)/dt)
+            theta_dt = np.diff(self.theta.value).mean()/max(abs(dtheta)/dt)
+            phi_dt = np.diff(self.phi.value).mean()/max(abs(dphi)/dt)
         
-        # find timestep from max velocity
-        r_dt = np.diff(self.r.value).mean()/max(dr_dt)
-        theta_dt = np.diff(self.theta.value).mean()/max(dtheta_dt)
-        phi_dt = np.diff(self.phi.value).mean()/max(dphi_dt)
-        
-        return min(r_dt, theta_dt, phi_dt)
+        return min(r_dt, theta_dt, phi_dt) # choose smallest timestep
         
 
     def _find_nearest_cells(self, 
@@ -370,6 +377,7 @@ class Simulation:
         else:
             dt = self._find_optimal_timestep(r_spline, theta_spline, phi_spline, times_mjd, psp=psp)
         
+        # print(times_mjd[0], times_mjd[-1], dt)
         times = np.arange(times_mjd[0], times_mjd[-1], dt)
         
         rs = r_spline(times)
@@ -401,24 +409,27 @@ class Simulation:
 #                               PUBLIC FUNCTIONS                             #
 ##############################################################################   
 
-    def get_cells_from_sc_coords(self, coords: Coordinates, spacecraft: str, fixed_dt: float | None = None):
+    def get_cells_from_sc_coords(self, 
+                                 coords: Coordinates, 
+                                 spacecraft: str, 
+                                 fixed_dt: float | None = None):
         """
         Find cells and times in simulation-space corresponding to spacecraft 
         coordinates.
         
         Parameters
         ----------
-        coords : 'heliospacey.coordinates.Coordinates'
+        coords : heliospacey.coordinates.Coordinates
             Coordinates object used to find nearest simulation-space 
             coordinates to the spacecraft path
-        spacecraft: 'str'
+        spacecraft: str
             Allowed spacecraft name. Choose from Coordinates.spacecraft
 
         Returns
         -------
-        'heliospacey.simulation.Simulation.sc_cell_idxs' :
+        heliospacey.simulation.Simulation.sc_cell_idxs :
             indices of simulation coordinates closest to spacecraft coordinates
-        'heliospacey.simulation.Simulation.sc_cell_times' : 
+        heliospacey.simulation.Simulation.sc_cell_times : 
             times corresponding to spacecraft's closest approach to simulation points
         """
         # Offset in longitude between t0 for spacecraft coordinates and t0 for simulation coordinates
@@ -461,23 +472,12 @@ class Simulation:
         self.spacecraft.append(spacecraft)
         
     
-    def get_value_slow(self, variable, cell_idxs):
-        path = self.file_paths[0]
-        if self.file_format == 'cdf':
-            idx = self._get_flattened_idx(*cell_idxs)
-            value = cdf.CDF(path).varget(variable=self.variables.get(variable)[0])[0][idx]
-        elif self.file_format == 'nc':
-            value = nc.Dataset(path)[self.variables.get(variable)[0]][0][cell_idxs[0]][cell_idxs[1]][cell_idxs[2]]
-        else:
-            raise Exception('File format not supported.')
-        
-        return value
-    
     def get_value(self, variable, cell_idxs):
         # phi_idx, theta_idx, r_idx
         value = self.data.get(variable)[cell_idxs[2]][cell_idxs[1]][cell_idxs[0]]
         
         return value
+    
     
     def get_value_time_dep(self, variable, cell_idxs, time=None):
             
@@ -504,8 +504,9 @@ class Simulation:
             raise Exception('File format not supported.')
         
         return value
+    
 
-    def get_data(self, variable, time=None, coords=None, interpolate=False):
+    def get_data(self, variable, time=None, coordinates=None, interpolate=False):
         
         if not self.is_stationary and time == None:
             raise Exception("Please specify a time for time-dependent simulations.")
@@ -525,6 +526,7 @@ class Simulation:
         else:
             path = self.file_paths[0]
         
+        value = None
         no_match = True
         for key, values in self.allowed_var_names.items():
             if variable in values:
@@ -540,12 +542,17 @@ class Simulation:
                     raise Exception('File format not supported.')
                 if interpolate:
                     data = self._interpolate(self.r, self.theta, self.phi, data)
+                if coordinates:
+                    phi_idx = self._nearest(self.phi.value, coordinates[2].to_value(u.rad))
+                    theta_idx = self._nearest(self.theta.value, coordinates[1].to_value(u.rad))
+                    r_idx = self._nearest(self.r.value, coordinates[0].to_value(u.au))
+                    value = data[phi_idx][theta_idx][r_idx]
                     
         if no_match:
             raise Exception('Variable name could not be parsed. Please choose from: {}'
                             .format(self.variables.keys()))
         
-        return data, units
+        return data, units, value
     
             
     def find_nearest_cell(self, coord, velocity):
@@ -676,12 +683,4 @@ class Simulation:
         flow_path = [dts, coords, cells, velocities]
         
         return flow_path
-        
-
-        
-    # def find_nearest_sc(self, flow_path):
-        
-        
-        
-
         
