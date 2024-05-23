@@ -47,6 +47,7 @@ spacecraft = sim.spacecraft # all available spacecraft in sim
 variables = list(sim.variables.keys())[3:] # all available variables in sim
 ts.get_timeseries(spacecraft, variables, sim, coords, set_labels=True)
 
+
 # # Animate flow tracing to confirm timeseries labels
 # # Change spacecraft as needed
 # # WARNING: SLOW. Run it once for all of 2022

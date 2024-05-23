@@ -19,6 +19,7 @@ import warnings
 import dill as pickle
 from bisect import bisect_left, bisect_right
 
+
 from coordinates import Coordinates
 from simulation import Simulation
 
@@ -129,6 +130,7 @@ class Timeseries:
         timeseries['r'] = r_spline(times)
         timeseries['lat'] = lat_spline(times)
         lons = lon_spline(times)
+        lons = lons % (2*np.pi)
         for l, lon in enumerate(lons):
             if lon > np.pi:
                 lons[l] = lon - 2*np.pi
@@ -249,6 +251,7 @@ class Timeseries:
                 else:
                     lon = lon_sc
                     
+                # TODO: restrict search to "nearby" flows, ie. +- 15 days?
                 for sc2 in other_spacecraft:
                     for flow_times, flow_coords in zip(flows_times[sc2], flows_coords[sc2]):
                         # For each flow path
